@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GPUConsultant — AI Infrastructure Recommendation Engine</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { background: #07071a; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .grad { background: linear-gradient(135deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; }
+    .card-highlight { background: linear-gradient(135deg, rgba(124,58,237,0.07), rgba(37,99,235,0.05)); border: 1px solid rgba(124,58,237,0.35); border-radius: 14px; }
+    .btn { background: linear-gradient(135deg, #7c3aed, #2563eb); border: none; border-radius: 10px; color: #fff; font-weight: 700; padding: 14px 40px; cursor: pointer; font-size: 16px; letter-spacing: 0.01em; transition: all .2s; box-shadow: 0 4px 24px rgba(124,58,237,0.35); }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 6px 30px rgba(124,58,237,0.5); }
+    .btn:active { transform: translateY(0); }
+    .tag { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+    .tag-green  { background: rgba(52,211,153,.12); color: #34d399; border: 1px solid rgba(52,211,153,.3); }
+    .tag-blue   { background: rgba(96,165,250,.12); color: #60a5fa; border: 1px solid rgba(96,165,250,.3); }
+    .tag-yellow { background: rgba(251,191,36,.12); color: #fbbf24; border: 1px solid rgba(251,191,36,.3); }
+    .tag-red    { background: rgba(248,113,113,.12); color: #f87171; border: 1px solid rgba(248,113,113,.3); }
+    .tag-purple { background: rgba(167,139,250,.12); color: #a78bfa; border: 1px solid rgba(167,139,250,.3); }
+    .wcard { cursor: pointer; border: 2px solid rgba(255,255,255,0.07); border-radius: 12px; padding: 18px 14px; transition: all .2s; background: rgba(255,255,255,0.02); text-align: center; }
+    .wcard:hover { border-color: rgba(167,139,250,.45); background: rgba(124,58,237,.06); }
+    .wcard.sel { border-color: #7c3aed; background: rgba(124,58,237,.13); }
+    select, input[type=number] { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 9px; color: #e2e8f0; padding: 11px 14px; width: 100%; outline: none; font-size: 14px; font-family: 'Inter', sans-serif; transition: border-color .2s; }
+    select:focus, input:focus { border-color: #7c3aed; }
+    select option { background: #12122b; }
+    label.lbl { display: block; font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 7px; }
+    .section-label { font-size: 11px; font-weight: 700; color: rgba(255,255,255,0.35); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+    .section-label::after { content: ''; flex: 1; height: 1px; background: rgba(255,255,255,0.06); }
+    .spec-box { background: rgba(255,255,255,0.04); border-radius: 10px; padding: 14px; }
+    .alt-row { display: flex; align-items: flex-start; gap: 16px; padding: 14px 16px; background: rgba(255,255,255,0.02); border-radius: 10px; border: 1px solid rgba(255,255,255,0.05); }
+    #results { animation: rise .4s ease; }
+    @keyframes rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #0c0c20; }
+    ::-webkit-scrollbar-thumb { background: #2d2d50; border-radius: 3px; }
+    .power-bar { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.07); overflow: hidden; margin-top: 6px; }
+    .power-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #7c3aed, #2563eb); transition: width .6s ease; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<!-- ──────────── HEADER ──────────── -->
+<header style="border-bottom:1px solid rgba(255,255,255,0.05)" class="px-6 py-4 sticky top-0 z-50" style="background:#07071a; backdrop-filter:blur(12px);">
+  <div class="max-w-5xl mx-auto flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div style="background:linear-gradient(135deg,#7c3aed,#2563eb)" class="w-8 h-8 rounded-lg flex items-center justify-center text-white font-black text-sm">G</div>
+      <span class="font-black text-lg tracking-tight">GPU<span class="grad">Consultant</span></span>
+    </div>
+    <div class="text-xs" style="color:rgba(255,255,255,0.2)">The Meghna Model · v2.0 · Updated Jan 2026</div>
+  </div>
+</header>
+
+<!-- ──────────── HERO ──────────── -->
+<section class="max-w-5xl mx-auto px-6 pt-14 pb-10 text-center">
+  <div class="tag tag-purple mb-5">AI Infrastructure Intelligence</div>
+  <h1 class="text-4xl md:text-5xl font-black tracking-tight mb-4 leading-tight">
+    AI Workload →<br/><span class="grad">GPU Recommendation Engine</span>
+  </h1>
+  <p class="text-lg max-w-xl mx-auto" style="color:rgba(255,255,255,0.45)">
+    Get precise hardware recommendations, 3-year TCO breakdowns, parallelism strategies,
+    and cost-per-token analysis tailored to your workload.
+  </p>
+</section>
+
+<!-- ──────────── FORM ──────────── -->
+<main class="max-w-5xl mx-auto px-6 pb-24">
+<div class="card p-8 mb-8">
+
+  <!-- 1. Workload type -->
+  <div class="mb-8">
+    <div class="section-label">1 · What are you building?</div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="wcard sel" data-v="inference" onclick="selWork(this)">
+        <div class="text-3xl mb-2">⚡</div>
+        <div class="font-bold text-sm">Inference</div>
+        <div class="text-xs mt-1" style="color:rgba(255,255,255,0.35)">Serving model to users</div>
+      </div>
+      <div class="wcard" data-v="training" onclick="selWork(this)">
+        <div class="text-3xl mb-2">🔬</div>
+        <div class="font-bold text-sm">Training</div>
+        <div class="text-xs mt-1" style="color:rgba(255,255,255,0.35)">Pre-train from scratch</div>
+      </div>
+      <div class="wcard" data-v="finetuning" onclick="selWork(this)">
+        <div class="text-3xl mb-2">🎯</div>
+        <div class="font-bold text-sm">Fine-tuning</div>
+        <div class="text-xs mt-1" style="color:rgba(255,255,255,0.35)">Adapt existing model</div>
+      </div>
+      <div class="wcard" data-v="rag" onclick="selWork(this)">
+        <div class="text-3xl mb-2">🔍</div>
+        <div class="font-bold text-sm">RAG / Embedding</div>
+        <div class="text-xs mt-1" style="color:rgba(255,255,255,0.35)">Retrieval-augmented</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Model -->
+  <div class="mb-8">
+    <div class="section-label">2 · Model Details</div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div>
+        <label class="lbl">Model Size (parameters)</label>
+        <select id="modelSize" onchange="onModelChange()">
+          <option value="1">1B — tiny / edge model</option>
+          <option value="3">3B — Phi-3, Gemma 3</option>
+          <option value="7" selected>7B — Llama 3, Mistral</option>
+          <option value="13">13B — Llama 2 13B</option>
+          <option value="34">34B — CodeLlama 34B</option>
+          <option value="70">70B — Llama 3 70B</option>
+          <option value="175">175B — GPT-3 scale</option>
+          <option value="405">405B — Llama 3.1 405B</option>
+          <option value="custom">Custom size…</option>
+        </select>
+      </div>
+      <div id="customDiv" style="display:none">
+        <label class="lbl">Custom Size (billions)</label>
+        <input type="number" id="customModel" placeholder="e.g. 30" min="0.1" max="3000" />
+      </div>
+      <div>
+        <label class="lbl">Architecture</label>
+        <select id="arch">
+          <option value="llm">Transformer LLM (text)</option>
+          <option value="diffusion">Diffusion (image / video)</option>
+          <option value="multimodal">Multimodal (vision + text)</option>
+          <option value="rl">RL Policy Model</option>
+          <option value="embedding">Embedding / Reranker</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Precision / Format</label>
+        <select id="precision">
+          <option value="bf16" selected>BF16 (training / default)</option>
+          <option value="fp8">FP8 (H100 optimized)</option>
+          <option value="int8">INT8 (quantized inference)</option>
+          <option value="int4">INT4 / GPTQ (memory-constrained)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3a. Inference / RAG params -->
+  <div id="infParams" class="mb-8">
+    <div class="section-label">3 · Scale & Performance</div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div>
+        <label class="lbl">Daily Requests / Queries</label>
+        <select id="dailyReq">
+          <option value="100">~100 / day (hobby / testing)</option>
+          <option value="1000">~1K / day (early product)</option>
+          <option value="10000" selected>~10K / day (growing startup)</option>
+          <option value="100000">~100K / day (scale-up)</option>
+          <option value="1000000">~1M / day (mid-market)</option>
+          <option value="10000000">~10M+ / day (enterprise)</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Avg Tokens per Response</label>
+        <select id="avgTok">
+          <option value="100">~100 tokens (short)</option>
+          <option value="250">~250 tokens</option>
+          <option value="500" selected>~500 tokens (typical chat)</option>
+          <option value="1000">~1,000 tokens</option>
+          <option value="4000">~4,000 tokens (long-form)</option>
+          <option value="16000">~16,000 tokens (document)</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Latency SLA</label>
+        <select id="latency">
+          <option value="realtime">Real-time (&lt;100ms TTFT)</option>
+          <option value="interactive" selected>Interactive (&lt;1 s TTFT)</option>
+          <option value="batch">Batch (no strict latency)</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Concurrent Users (peak)</label>
+        <select id="concurrency">
+          <option value="1">1–10 (dev / internal)</option>
+          <option value="50" selected>10–100 (small product)</option>
+          <option value="500">100–1,000 (growing)</option>
+          <option value="5000">1,000–10,000 (scale)</option>
+          <option value="50000">10,000+ (large scale)</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Context Window</label>
+        <select id="ctxWindow">
+          <option value="4096">4K tokens (standard)</option>
+          <option value="8192" selected>8K tokens</option>
+          <option value="32768">32K tokens</option>
+          <option value="131072">128K tokens (long context)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3b. Training params -->
+  <div id="trainParams" class="mb-8" style="display:none">
+    <div class="section-label">3 · Training Configuration</div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div>
+        <label class="lbl">Training Dataset Size</label>
+        <select id="trainTok">
+          <option value="1">~1B tokens (fine-tune scale)</option>
+          <option value="100">~100B tokens (small pre-train)</option>
+          <option value="1000" selected>~1T tokens (standard LLM)</option>
+          <option value="15000">~15T tokens (Llama 3 scale)</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Desired Training Timeline</label>
+        <select id="timeline">
+          <option value="1">~1 month</option>
+          <option value="3" selected>~3 months</option>
+          <option value="6">~6 months</option>
+          <option value="12">~12 months</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Global Batch Size</label>
+        <select id="batchSz">
+          <option value="16">Small (8–32) — RL, custom loops</option>
+          <option value="512" selected>Medium (256–1024) — standard</option>
+          <option value="4096">Large (4096+) — data-parallel</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Training Objective</label>
+        <select id="trainObj">
+          <option value="pretrain" selected>Pre-training (causal LM)</option>
+          <option value="rlhf">RLHF / PPO</option>
+          <option value="dpo">DPO / ORPO (alignment)</option>
+          <option value="diffusion">Diffusion model training</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. Business context -->
+  <div class="mb-8">
+    <div class="section-label">4 · Business Context</div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div>
+        <label class="lbl">3-Year Budget (total)</label>
+        <select id="budget">
+          <option value="10000">Under $10K (API-only budget)</option>
+          <option value="50000">$10K – $50K (indie / small team)</option>
+          <option value="200000" selected>$50K – $200K (startup)</option>
+          <option value="1000000">$200K – $1M (growth stage)</option>
+          <option value="5000000">$1M – $5M (scale-up)</option>
+          <option value="20000000">$5M – $20M (mid-market)</option>
+          <option value="100000000">$20M+ (enterprise)</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Infrastructure Preference</label>
+        <select id="infra">
+          <option value="cloud_ok" selected>Cloud OK — managed is fine</option>
+          <option value="hybrid">Hybrid — prefer on-prem, burst to cloud</option>
+          <option value="onprem">On-prem required — compliance / privacy</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Team / Expertise</label>
+        <select id="expertise">
+          <option value="solo">Solo developer / indie hacker</option>
+          <option value="startup" selected>Startup (3–15 engineers)</option>
+          <option value="midmarket">Mid-market (15–200 engineers)</option>
+          <option value="enterprise">Enterprise (200+ engineers)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. Power / location -->
+  <div class="mb-8">
+    <div class="section-label">5 · Power & Location <span style="color:rgba(255,255,255,0.25);font-weight:400;text-transform:none;letter-spacing:0">(optional — affects TCO accuracy)</span></div>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div>
+        <label class="lbl">Data Center Location</label>
+        <select id="location" onchange="onLocation()">
+          <option value="us_east">US East (Virginia) — ~$0.05/kWh</option>
+          <option value="us_west">US West (Oregon) — ~$0.04/kWh</option>
+          <option value="eu_west">EU West (Ireland) — ~$0.10/kWh</option>
+          <option value="apac">APAC (Singapore) — ~$0.12/kWh</option>
+          <option value="custom" selected>Custom (enter rate below)</option>
+        </select>
+      </div>
+      <div>
+        <label class="lbl">Electricity Rate ($/kWh)</label>
+        <input type="number" id="elec" value="0.10" step="0.01" min="0.01" max="0.60" />
+      </div>
+      <div>
+        <label class="lbl">PUE (Power Usage Effectiveness)</label>
+        <select id="pue">
+          <option value="1.2">1.2 — Hyperscale / colo</option>
+          <option value="1.4" selected>1.4 — Typical on-prem</option>
+          <option value="1.6">1.6 — Older facility</option>
+          <option value="2.0">2.0 — Edge / non-optimized</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="flex justify-center pt-2">
+    <button class="btn" onclick="generate()">Generate Recommendation →</button>
+  </div>
+</div>
+
+<!-- ──────────── RESULTS ──────────── -->
+<div id="results" style="display:none">
+
+  <!-- Primary recommendation -->
+  <div class="card-highlight p-8 mb-6">
+    <div class="flex flex-wrap items-start justify-between gap-4 mb-6">
+      <div>
+        <div class="tag tag-green mb-3">Primary Recommendation</div>
+        <h2 id="rTitle" class="text-2xl font-black text-white mt-1"></h2>
+        <p id="rSub" class="text-sm mt-1" style="color:rgba(255,255,255,0.45)"></p>
+      </div>
+      <div class="text-right">
+        <div id="rCost" class="text-3xl font-black mono" style="color:#a78bfa"></div>
+        <div class="text-xs mt-1" style="color:rgba(255,255,255,0.3)">3-year total cost</div>
+        <div id="rCpt" class="text-base font-bold mono mt-1" style="color:#34d399"></div>
+      </div>
+    </div>
+    <!-- Spec boxes -->
+    <div id="specGrid" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5"></div>
+    <!-- Parallelism -->
+    <div class="rounded-xl p-4 mb-3" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06)">
+      <div class="text-xs font-bold uppercase tracking-widest mb-2" style="color:rgba(255,255,255,0.35)">Parallelism Strategy</div>
+      <div id="rParallel" class="text-sm leading-relaxed" style="color:rgba(255,255,255,0.75)"></div>
+    </div>
+    <!-- Software -->
+    <div class="rounded-xl p-4" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06)">
+      <div class="text-xs font-bold uppercase tracking-widest mb-2" style="color:rgba(255,255,255,0.35)">Recommended Software Stack</div>
+      <div id="rSoftware" class="text-sm leading-relaxed" style="color:rgba(255,255,255,0.75)"></div>
+    </div>
+  </div>
+
+  <!-- TCO + chart -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+    <div class="card p-6">
+      <div class="font-bold mb-5 text-white">3-Year TCO Breakdown</div>
+      <div id="tcoRows" class="space-y-3"></div>
+      <div class="border-t mt-4 pt-4 flex justify-between items-center" style="border-color:rgba(255,255,255,0.08)">
+        <span class="font-bold text-white">Total</span>
+        <span id="tcoTotal" class="font-black text-2xl mono" style="color:#a78bfa"></span>
+      </div>
+    </div>
+    <div class="card p-6">
+      <div class="font-bold mb-4 text-white">Cost Distribution</div>
+      <canvas id="tcoChart" height="220"></canvas>
+    </div>
+  </div>
+
+  <!-- Token cost + power -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+    <div class="card p-6">
+      <div class="font-bold mb-4 text-white">Cost Per Token Analysis</div>
+      <div id="tokenGrid" class="grid grid-cols-2 gap-3"></div>
+    </div>
+    <div class="card p-6">
+      <div class="font-bold mb-4 text-white">Power Analysis</div>
+      <div id="powerGrid" class="space-y-3"></div>
+    </div>
+  </div>
+
+  <!-- Alternatives -->
+  <div class="card p-6 mb-6">
+    <div class="font-bold mb-5 text-white">Alternative Options</div>
+    <div id="altsGrid" class="space-y-3"></div>
+  </div>
+
+  <!-- Comparison bar chart -->
+  <div class="card p-6 mb-6">
+    <div class="font-bold mb-4 text-white">3-Year Cost Comparison</div>
+    <canvas id="altChart" height="100"></canvas>
+  </div>
+
+  <!-- Technical notes -->
+  <div class="card p-6">
+    <div class="font-bold mb-4 text-white">Technical Notes & Caveats</div>
+    <div id="techNotes" class="space-y-2 text-sm" style="color:rgba(255,255,255,0.55)"></div>
+  </div>
+
+</div><!-- /results -->
+</main>
+
+<footer class="text-center pb-10 text-xs" style="color:rgba(255,255,255,0.18)">
+  GPUConsultant · Prices & specs as of Jan 2026 · Estimates are indicative. Always benchmark your specific workload.
+</footer>
+
+<!-- ──────────── SCRIPT ──────────── -->
+<script>
+// ═══════════════════════════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════════════════════════
+const GPU = {
+  h100_sxm: { name:'NVIDIA H100 SXM5 80GB', vendor:'NVIDIA', vram:80, price:32000, tdp:700, bf16:989, bw:3350, nvlink:true,  gen:'Hopper 2023' },
+  h100_pcie:{ name:'NVIDIA H100 PCIe 80GB', vendor:'NVIDIA', vram:80, price:26000, tdp:350, bf16:756, bw:2000, nvlink:false, gen:'Hopper 2023' },
+  h200_sxm: { name:'NVIDIA H200 SXM5 141GB',vendor:'NVIDIA', vram:141,price:40000, tdp:700, bf16:989, bw:4800, nvlink:true,  gen:'Hopper+ 2024' },
+  a100_80:  { name:'NVIDIA A100 SXM 80GB (used)',vendor:'NVIDIA',vram:80,price:11000,tdp:400,bf16:312,bw:2000, nvlink:true,  gen:'Ampere 2020' },
+  mi300x:   { name:'AMD Instinct MI300X 192GB',vendor:'AMD',  vram:192,price:17000, tdp:750, bf16:1307,bw:5300, nvlink:false, gen:'CDNA3 2023' },
+  rtx4090:  { name:'NVIDIA RTX 4090 24GB',  vendor:'NVIDIA', vram:24, price:1800,  tdp:450, bf16:165, bw:1008, nvlink:false, gen:'Ada 2022' },
+};
+
+// ═══════════════════════════════════════════════════════════
+// UI HELPERS
+// ═══════════════════════════════════════════════════════════
+let workload = 'inference';
+let tcoChart = null, altChart = null;
+
+function selWork(el) {
+  document.querySelectorAll('.wcard').forEach(c => c.classList.remove('sel'));
+  el.classList.add('sel');
+  workload = el.dataset.v;
+  const isInf = workload === 'inference' || workload === 'rag';
+  document.getElementById('infParams').style.display   = isInf ? 'block' : 'none';
+  document.getElementById('trainParams').style.display = isInf ? 'none'  : 'block';
+}
+
+function onModelChange() {
+  document.getElementById('customDiv').style.display =
+    document.getElementById('modelSize').value === 'custom' ? 'block' : 'none';
+}
+
+function onLocation() {
+  const rates = { us_east:0.05, us_west:0.04, eu_west:0.10, apac:0.12 };
+  const loc = document.getElementById('location').value;
+  if (rates[loc]) document.getElementById('elec').value = rates[loc];
+}
+
+// ═══════════════════════════════════════════════════════════
+// FORMATTERS
+// ═══════════════════════════════════════════════════════════
+function fmtUSD(n) {
+  if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return '$' + (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return '$' + (n/1e3).toFixed(0) + 'K';
+  return '$' + n.toFixed(0);
+}
+function fmtN(n) {
+  if (n >= 1e12) return (n/1e12).toFixed(1) + 'T';
+  if (n >= 1e9)  return (n/1e9).toFixed(1)  + 'B';
+  if (n >= 1e6)  return (n/1e6).toFixed(1)  + 'M';
+  if (n >= 1e3)  return (n/1e3).toFixed(0)  + 'K';
+  return n.toFixed(0);
+}
+
+// ═══════════════════════════════════════════════════════════
+// MAIN ENTRY
+// ═══════════════════════════════════════════════════════════
+function generate() {
+  const raw  = document.getElementById('modelSize').value;
+  const mb   = raw === 'custom' ? parseFloat(document.getElementById('customModel').value) || 7 : parseFloat(raw);
+  const prec = document.getElementById('precision').value;
+  const precMult = { bf16:2, fp8:1, int8:1, int4:0.5 }[prec] || 2;
+
+  const dailyReq   = parseInt(document.getElementById('dailyReq').value);
+  const avgTok     = parseInt(document.getElementById('avgTok').value);
+  const latency    = document.getElementById('latency').value;
+  const concur     = parseInt(document.getElementById('concurrency').value);
+  const ctxWin     = parseInt(document.getElementById('ctxWindow').value);
+
+  const trainTok   = parseFloat(document.getElementById('trainTok').value);
+  const timeline   = parseInt(document.getElementById('timeline').value);
+
+  const budget     = parseInt(document.getElementById('budget').value);
+  const infra      = document.getElementById('infra').value;
+  const expertise  = document.getElementById('expertise').value;
+  const elec       = parseFloat(document.getElementById('elec').value);
+  const pue        = parseFloat(document.getElementById('pue').value);
+
+  const inp = { workload, mb, precMult, dailyReq, avgTok, latency, concur, ctxWin,
+                trainTok, timeline, budget, infra, expertise, elec, pue };
+
+  const rec = recommend(inp);
+  render(rec, inp);
+
+  const el = document.getElementById('results');
+  el.style.display = 'block';
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ═══════════════════════════════════════════════════════════
+// RECOMMENDATION ENGINE
+// ═══════════════════════════════════════════════════════════
+function recommend(inp) {
+  const { workload, mb, precMult, dailyReq, avgTok, budget, infra, trainTok, timeline } = inp;
+
+  // Memory required (inference = weights only + 20% activation overhead)
+  const infMemGB   = mb * precMult * 1.2;
+  const trainMemGB = mb * 16;   // weights + optimizer states + gradients
+  const ftMemGB    = mb * 8;    // LoRA / QLoRA
+
+  const dailyTok   = dailyReq * avgTok;
+  const annualTok  = dailyTok * 365;
+
+  if (workload === 'inference' || workload === 'rag') {
+    return recInference(inp, infMemGB, annualTok);
+  } else if (workload === 'training') {
+    return recTraining(inp, trainMemGB, trainTok, timeline);
+  } else {
+    return recFinetune(inp, ftMemGB);
+  }
+}
+
+// ─── INFERENCE ───
+function recInference(inp, memGB, annualTok) {
+  const { mb, dailyReq, avgTok, latency, budget, infra, expertise, elec, pue, concur } = inp;
+
+  // Cloud cost estimate
+  const cloudRate = mb <= 13 ? 0.27 : mb <= 70 ? 0.59 : 3.00; // $/M tokens (GroqCloud)
+  const annualCloudCost = (annualTok / 1e6) * cloudRate;
+  const cloud3yr = annualCloudCost * 3;
+
+  // Decide cloud vs on-prem
+  const cloudOk = infra !== 'onprem';
+  const preferCloud = cloudOk && (cloud3yr < Math.min(budget * 0.7, 30000) || expertise === 'solo');
+
+  if (preferCloud) return cloudRec(inp, annualTok, cloudRate, cloud3yr);
+
+  // Select GPU
+  let gId, gCount;
+
+  if (mb >= 175) {
+    gId = budget > 8000000 ? 'h200_sxm' : 'h100_sxm';
+    const vram = GPU[gId].vram;
+    gCount = nextPow2(Math.ceil(memGB / vram), [4,8,16,32,64,128]);
+  } else if (mb >= 70) {
+    if (latency === 'realtime') {
+      gId = 'h100_sxm';
+      gCount = nextPow2(Math.ceil(memGB / 80), [2,4,8,16]);
+    } else {
+      gId = budget > 1000000 ? 'h100_pcie' : 'a100_80';
+      gCount = nextPow2(Math.ceil(memGB / GPU[gId].vram), [1,2,4,8]);
+    }
+  } else if (mb >= 13) {
+    gId = budget < 60000 ? 'a100_80' : 'h100_pcie';
+    gCount = nextPow2(Math.ceil(memGB / GPU[gId].vram), [1,2,4]);
+  } else {
+    // Small models
+    if (budget < 5000 || expertise === 'solo') { gId = 'rtx4090'; gCount = 1; }
+    else if (budget < 30000) { gId = 'a100_80'; gCount = 1; }
+    else { gId = 'h100_pcie'; gCount = 1; }
+  }
+
+  // Scale for throughput
+  const tokPerSecPerGpu = mb > 0 ? (GPU[gId].bw / (mb * inp.precMult * 1e3)) * 0.65 : 1000;
+  const tokPerSecNeeded = (dailyReq * avgTok) / (24 * 3600);
+  const gpuForTput = Math.max(1, Math.ceil(tokPerSecNeeded / tokPerSecPerGpu));
+  gCount = nextPow2(Math.max(gCount, gpuForTput), [1,2,4,8,16,32,64,128]);
+
+  return onpremRec(inp, gId, gCount, annualTok, 'inference');
+}
+
+// ─── TRAINING ───
+function recTraining(inp, memGB, trainTok, timeline) {
+  const { mb, budget, infra, expertise } = inp;
+
+  const trainFLOPs = 6 * mb * 1e9 * trainTok * 1e9;
+  const timeSec = timeline * 30 * 24 * 3600;
+
+  let gId, gCount;
+
+  if (mb <= 7) {
+    gId = 'h100_pcie';
+    const flopsPerGpu = GPU[gId].bf16 * 1e12 * 0.50;
+    gCount = nextPow2(Math.max(4, Math.ceil(trainFLOPs / timeSec / flopsPerGpu)), [4,8,16,32,64]);
+  } else if (mb <= 70) {
+    gId = 'h100_sxm';
+    const flopsPerGpu = GPU[gId].bf16 * 1e12 * 0.45;
+    gCount = nextPow2(Math.max(8, Math.ceil(trainFLOPs / timeSec / flopsPerGpu)), [8,16,32,64,128,256]);
+  } else {
+    gId = 'h100_sxm';
+    const flopsPerGpu = GPU[gId].bf16 * 1e12 * 0.40;
+    gCount = nextPow2(Math.max(64, Math.ceil(trainFLOPs / timeSec / flopsPerGpu)), [64,128,256,512,1024,2048]);
+  }
+
+  return onpremRec(inp, gId, gCount, trainTok * 1e9, 'training');
+}
+
+// ─── FINE-TUNING ───
+function recFinetune(inp, memGB) {
+  const { mb, budget, expertise } = inp;
+  let gId, gCount;
+
+  if (mb <= 7) {
+    gId = (budget < 4000 || expertise === 'solo') ? 'rtx4090' : 'h100_pcie';
+    gCount = 1;
+  } else if (mb <= 13) {
+    gId = budget < 30000 ? 'a100_80' : 'h100_pcie';
+    gCount = 1;
+  } else if (mb <= 70) {
+    gId = 'h100_pcie';
+    gCount = nextPow2(Math.ceil(memGB / 80), [1,2,4,8]);
+  } else {
+    gId = 'h100_sxm';
+    gCount = nextPow2(Math.ceil(memGB / 80), [4,8,16]);
+  }
+
+  return onpremRec(inp, gId, gCount, 1e9, 'finetuning');
+}
+
+// ─── CLOUD RECOMMENDATION ───
+function cloudRec(inp, annualTok, rate, cost3yr) {
+  const { mb, dailyReq, avgTok, latency, expertise } = inp;
+  const provider = latency === 'realtime' || mb <= 13 ? 'GroqCloud' : 'Together AI / Fireworks AI';
+  const ttft = latency === 'realtime' ? '30–80ms' : '100–400ms';
+
+  const tco = {
+    api:   { label: 'API / token costs (3yr)', v: cost3yr },
+    eng:   { label: 'Integration engineering', v: 8000 },
+    tools: { label: 'Monitoring & observability (3yr)', v: 6000 * 3 },
+  };
+  const total = Object.values(tco).reduce((a,x) => a+x.v, 0);
+  const cpt   = total / (annualTok * 3);
+
+  return {
+    type:'cloud', title:`${provider} — Managed Cloud API`,
+    subtitle:`Optimal for ${fmtN(dailyReq)}/day requests · zero CapEx`,
+    specs:[
+      { l:'Provider', v:provider },
+      { l:'Est. TTFT', v:ttft },
+      { l:'Annual Tokens', v:fmtN(annualTok) },
+      { l:'Model Size', v:`${inp.mb}B params` },
+    ],
+    parallel: 'Managed by provider — no infrastructure to configure. Automatic load balancing, horizontal scaling, and geo-routing included.',
+    software: `REST/streaming API (OpenAI-compatible). Client libraries: openai SDK, LangChain, LlamaIndex. Add retry logic with exponential backoff. Use streaming for better perceived latency. Monitor with LangSmith or Helicone.`,
+    tco, total, cpt, annTok: annualTok,
+    power:null,
+    alts:[
+      { name:'Together AI',     tag:'good',    desc:`~$${mb<=13?'0.20':'0.90'}/M tokens. 70+ models, good throughput guarantees.`,       c3: (annualTok/1e6)*(mb<=13?0.20:0.90)*3 },
+      { name:'Fireworks AI',    tag:'good',    desc:`~$${mb<=13?'0.20':'0.50'}/M tokens. Production-grade, fast cold starts.`,            c3: (annualTok/1e6)*(mb<=13?0.20:0.50)*3 },
+      { name:'Single H100 PCIe (on-prem)', tag:'consider', desc:`$26K CapEx + ~$3K/yr power. Better for privacy. Break-even at ~${fmtN(29000/(rate/1e6))} total tokens.`, c3:26000+3000*3 },
+    ],
+    notes:[
+      `Break-even vs on-prem H100 PCIe: ~${fmtN(29000 / (rate/1e6))} lifetime tokens.`,
+      'Set hard rate limits and budget alerts — token costs scale directly with traffic.',
+      'Groq LPU is inference-only; if you add fine-tuning later you will need a separate training environment.',
+      `At ${fmtN(dailyReq)} req/day your cloud API bill is ${fmtUSD(cost3yr/36)}/month — well below on-prem operating cost.`,
+    ],
+  };
+}
+
+// ─── ON-PREM RECOMMENDATION ───
+function onpremRec(inp, gId, gCount, tokenVolume, mode) {
+  const { mb, latency, elec, pue, expertise, timeline, trainTok } = inp;
+  const g = GPU[gId];
+
+  const gpuPerNode = g.nvlink ? 8 : 4;
+  const nodes = Math.ceil(gCount / gpuPerNode);
+  const par = parallelism(gCount, mb, mode, g);
+
+  // CapEx
+  const capGpu   = gCount * g.price;
+  const capInfra = nodes * 18000 + (nodes > 1 ? nodes * 10000 : 0);
+  const capTotal = capGpu + capInfra;
+
+  // Power
+  const annPowerKwh = (gCount * g.tdp * pue * 8760) / 1000;
+  const annPowerCost = annPowerKwh * elec;
+  const power3yr = annPowerCost * 3;
+
+  // Staffing
+  const staff3yr = { solo:0, startup:120000*3, midmarket:400000*3, enterprise:800000*3 }[expertise] || 120000*3;
+
+  // Maintenance
+  const maint3yr = capTotal * 0.08 * 3;
+
+  const total = capTotal + power3yr + staff3yr + maint3yr;
+
+  // Tokens
+  const annTok = tokenVolume * (mode === 'inference' ? 365 : 1);
+  const cpt    = total / (annTok * 3);
+
+  // Throughput
+  const tokSecPerGpu = g.bw / (mb * 2 * 1e3) * 0.65;
+  const totalTokSec  = tokSecPerGpu * gCount * (gCount > 1 ? 0.85 : 1.0);
+
+  // Training time
+  let trainTimeStr = '';
+  if (mode === 'training') {
+    const flops = 6 * mb * 1e9 * trainTok * 1e9;
+    const gpuFlops = g.bf16 * 1e12 * 0.45 * gCount;
+    const days = flops / gpuFlops / 86400;
+    trainTimeStr = days < 1 ? `${(days*24).toFixed(0)}h` : days < 30 ? `${days.toFixed(0)} days` : `${(days/30).toFixed(1)} months`;
+  }
+
+  const tco = {
+    gpu:   { label:`GPU hardware — ${gCount}× ${g.name}`, v:capGpu },
+    infra: { label:`Infrastructure (servers, networking, cooling)`, v:capInfra },
+    power: { label:`Power (${fmtN(annPowerKwh)} kWh/yr × $${elec}/kWh × 3yr)`, v:power3yr },
+    ...(staff3yr > 0 ? { staff: { label:`MLOps / engineering staff (3yr)`, v:staff3yr } } : {}),
+    maint: { label:`Maintenance & support (3yr)`, v:maint3yr },
+  };
+
+  return {
+    type:'onprem', title:`${gCount}× ${g.name}`,
+    subtitle:`${nodes} compute node${nodes>1?'s':''} · ${par.name}`,
+    specs:[
+      { l:'GPU', v:`${gCount}× ${g.name}` },
+      { l:'Total VRAM', v:`${gCount * g.vram} GB` },
+      { l:'Nodes', v:`${nodes}` },
+      mode === 'inference'
+        ? { l:'Est. Throughput', v:`~${fmtN(totalTokSec)} tok/s` }
+        : { l:'Training Time', v:trainTimeStr },
+    ],
+    parallel: par.desc,
+    software: softStack(mode, gCount, mb, g.vendor),
+    tco, total, cpt, annTok,
+    power: { annPowerKwh, annPowerCost, gpuTdpTotal: gCount * g.tdp },
+    alts: altOptions(inp, gId, gCount, total, tokenVolume, mode),
+    notes: techNotes(inp, gId, gCount, mode),
+  };
+}
+
+// ─── PARALLELISM STRATEGY ───
+function parallelism(gpuCount, mb, mode, g) {
+  if (gpuCount === 1) return { name:'Single GPU', desc:`Single GPU — no parallelism. Model fits in ${g.vram}GB VRAM${mb<=7?' with room for large batches':''}.` };
+
+  if (gpuCount <= 8 && g.nvlink) {
+    const tp = Math.min(gpuCount, 8);
+    return { name:`Tensor Parallel TP=${tp}`,
+      desc:`Tensor Parallelism (TP=${tp}) via NVLink ${g.nvlink?'(900 GB/s)':''}. Each GPU holds 1/${tp} of every attention head and MLP layer. All-reduce at each transformer layer boundary. Achieves near-linear scaling within a single DGX/HGX node. Requires NVLink for efficiency — PCIe bottleneck would limit scaling.` };
+  }
+
+  if (gpuCount <= 8 && !g.nvlink) {
+    return { name:`Data Parallel (DDP)`,
+      desc:`Data Parallelism via PyTorch DDP. Each GPU holds a full model copy (${(mb*2).toFixed(0)} GB). Gradient sync over PCIe/InfiniBand. Effective for batch-size scaling. For memory-efficiency at this model size consider FSDP (Fully Sharded Data Parallel) which shards optimizer states.` };
+  }
+
+  if (gpuCount <= 16) {
+    return { name:`TP=8 + PP=2`,
+      desc:`Hybrid parallelism: Tensor Parallel (TP=8) within each 8-GPU node via NVLink, Pipeline Parallel (PP=2) across 2 nodes via 100GbE/InfiniBand. Model split into 2 pipeline micro-batch stages. Requires ${gpuCount/8} nodes with InfiniBand HDR (200Gb/s) inter-node fabric. Expected MFU ~48–52%.` };
+  }
+
+  if (gpuCount <= 64) {
+    const nodes = Math.ceil(gpuCount / 8);
+    const dp = Math.max(1, Math.floor(nodes / 2));
+    return { name:`3D Parallel (DP=${dp}, TP=8, PP=2)`,
+      desc:`3D Parallelism: Data Parallel (${dp} replica groups) × Tensor Parallel (TP=8, within each node) × Pipeline Parallel (PP=2, across node pairs). Standard Megatron-LM 3D setup for ${mb}B–175B models. Requires InfiniBand HDR (200 Gb/s) inter-node fabric. Expected MFU ~42–48%.` };
+  }
+
+  const nodes = Math.ceil(gpuCount / 8);
+  const dp = Math.max(1, Math.floor(nodes / 4));
+  return { name:`Full 3D Parallel (DP=${dp}, TP=8, PP=4)`,
+    desc:`Full 3D Parallelism at ${gpuCount}-GPU scale: DP=${dp} × TP=8 × PP=4. Pipeline depth 4 across node pairs, tensor parallel within nodes, data parallel across replica groups. Megatron-Core with Transformer Engine (FP8) on H100. Requires InfiniBand NDR/HDR400 fabric. Expected MFU ~38–44%.` };
+}
+
+// ─── SOFTWARE STACK ───
+function softStack(mode, gpuCount, mb, vendor) {
+  if (vendor === 'AMD') {
+    const base = 'ROCm 6.x + PyTorch (ROCm build). CUDA-based libraries need ROCm ports — test compatibility first. ';
+    return base + (mode === 'inference'
+      ? 'vLLM (ROCm supported). Text Generation Inference (TGI) also ROCm-compatible.'
+      : 'Megatron-LM ROCm port. PyTorch FSDP works natively. Flash Attention 2 ROCm port available.');
+  }
+  if (mode === 'training') {
+    if (gpuCount <= 4) return 'PyTorch + DDP / FSDP (single node). Flash Attention 2. Gradient checkpointing. W&B or MLflow for tracking. HuggingFace Accelerate for easy multi-GPU.';
+    if (gpuCount <= 64) return 'Megatron-LM + FSDP. NVIDIA NCCL 2.x for collective comms. Flash Attention 2. TensorRT-LLM for evaluation. Weights & Biases for experiment tracking. DCGM for GPU health monitoring.';
+    return 'Megatron-Core + Transformer Engine (FP8 training). NVIDIA NeMo framework. NCCL + UCX-CX7 for fabric. DCGM + Prometheus for observability. MLPerf Training as baseline. FP8 gives ~1.8× throughput vs BF16 on H100.';
+  }
+  if (mode === 'finetuning') {
+    if (mb <= 7)  return 'HuggingFace Transformers + PEFT (QLoRA, LoRA). bitsandbytes for 4-bit quantization. Flash Attention 2. DeepSpeed ZeRO-2. Axolotl for opinionated fine-tuning pipelines.';
+    return 'HuggingFace TRL + DeepSpeed ZeRO-3. QLoRA for memory efficiency. Flash Attention 2. FSDP for larger batches. Unsloth for 2× speedup on smaller GPUs.';
+  }
+  // Inference
+  if (gpuCount === 1) return 'vLLM (recommended) — PagedAttention, continuous batching. TensorRT-LLM for max throughput. Ollama for simple local deployment. SGLang for complex multi-call pipelines.';
+  return `vLLM with multi-GPU tensor parallelism (--tensor-parallel-size ${Math.min(gpuCount, 8)}). TensorRT-LLM for production. NVIDIA Triton Inference Server for enterprise serving. OpenAI-compatible API endpoint. FP8 quantization on H100 for ~2× throughput boost.`;
+}
+
+// ─── ALTERNATIVES ───
+function altOptions(inp, primaryId, primaryCount, primaryTco, tokenVol, mode) {
+  const { mb, infra, expertise, elec, pue, latency } = inp;
+  const alts = [];
+  const cloudOk = infra !== 'onprem';
+
+  // Cloud
+  if (cloudOk) {
+    const rate = mb<=13 ? 0.27 : mb<=70 ? 0.59 : 3.00;
+    const annTok = tokenVol * (mode==='inference'?365:1);
+    const c3 = (annTok/1e6) * rate * 3;
+    alts.push({ name:'Cloud API (GroqCloud / Together AI)', tag: c3 < primaryTco ? 'better' : 'worse',
+      desc:`~$${rate}/M tokens. Zero CapEx, instant start. ${c3 < primaryTco ? `Saves ${fmtUSD(primaryTco - c3)} vs on-prem at this volume.` : `On-prem breaks even at ~${fmtN(primaryTco/(rate/1e6))} tokens.`}`, c3 });
+  }
+
+  // AMD MI300X for large models
+  if (primaryId !== 'mi300x' && mb >= 34) {
+    const cnt = nextPow2(Math.ceil((mb*2*1.2)/192), [1,2,4,8,16]);
+    const c3 = cnt*17000 + cnt*3000 + (cnt*750*pue*8760/1000)*elec*3 + 100000*3;
+    alts.push({ name:`AMD MI300X × ${cnt} (192GB each)`, tag: c3 < primaryTco ? 'better' : 'consider',
+      desc:`192GB HBM3 per GPU — fits ${mb}B model on fewer GPUs. 5.3 TB/s bandwidth. ROCm ecosystem maturing. ${c3 < primaryTco ? `${fmtUSD(primaryTco-c3)} cheaper TCO.` : 'Comparable TCO, software risk.'}`, c3 });
+  }
+
+  // A100 used market
+  if (primaryId === 'h100_sxm' || primaryId === 'h100_pcie') {
+    const c3 = primaryCount*11000 + Math.ceil(primaryCount/8)*18000 + (primaryCount*400*pue*8760/1000)*elec*3 + 90000*3;
+    alts.push({ name:`NVIDIA A100 80GB × ${primaryCount} (used market)`, tag: c3 < primaryTco ? 'better' : 'consider',
+      desc:`~$11K/unit used (Jan 2026). Same 80GB VRAM, ~3× less peak BF16 compute vs H100. No FP8. Ampere generation. ${c3 < primaryTco ? `${fmtUSD(primaryTco-c3)} cheaper.` : 'Higher TCO but proven hardware.'}`, c3 });
+  }
+
+  // Cerebras for large training
+  if (mode === 'training' && mb >= 70) {
+    alts.push({ name:'Cerebras CS-3 (wafer-scale chip)', tag:'consider',
+      desc:`~$2M+ system, 900K cores, 44GB on-chip SRAM. Eliminates inter-chip comms. Best for 70B–1T models. Proprietary software stack, 6–12 month procurement. Long-term lower $/token for very large scale.`, c3:2200000 + 150000*3 });
+  }
+
+  // Groq for real-time inference
+  if (mode === 'inference' && latency === 'realtime' && mb <= 70 && cloudOk) {
+    const rate = mb<=13 ? 0.10 : 0.59;
+    const annTok = tokenVol;
+    const c3 = (annTok/1e6)*rate*3 + 8000;
+    alts.push({ name:'Groq LPU — ultra-low latency inference', tag: c3 < primaryTco ? 'better' : 'good',
+      desc:`Groq Language Processing Unit. Sub-50ms TTFT for 70B models. Deterministic latency. No infrastructure to manage. GroqCloud API at $${rate}/M tokens.`, c3 });
+  }
+
+  return alts.slice(0, 3);
+}
+
+// ─── TECHNICAL NOTES ───
+function techNotes(inp, gId, gCount, mode) {
+  const { mb, latency, expertise } = inp;
+  const g = GPU[gId];
+  const ns = [];
+
+  if (g.vendor === 'NVIDIA' && gId.includes('h100')) {
+    ns.push(`H100 supports FP8 training via Transformer Engine — ~1.8× throughput vs BF16 for training. Enable with <code>transformer_engine</code> library.`);
+  }
+  if (gCount > 8) {
+    ns.push(`Multi-node setup requires InfiniBand HDR (200Gb/s) or RoCE v2. Budget $15–30K/node for networking. NCCL performance is sensitive to fabric topology — use <code>NCCL_DEBUG=INFO</code> to diagnose.`);
+  }
+  if (mode === 'inference' && latency === 'realtime') {
+    ns.push(`Real-time latency (&lt;100ms TTFT) requires tensor parallelism, PagedAttention, and prefill/decode disaggregation. Consider speculative decoding (+40–60% decode throughput) with a small draft model.`);
+  }
+  const infMemGB = mb * 2 * 1.2;
+  if (infMemGB > g.vram * gCount) {
+    ns.push(`⚠️ Model requires quantization to fit in ${gCount*g.vram}GB VRAM. Use GPTQ INT4 or AWQ — expect ~3–8% accuracy degradation vs BF16.`);
+  }
+  if (expertise === 'solo') {
+    ns.push(`As a solo developer, strongly consider cloud APIs to avoid infra overhead. On-prem requires driver management, hardware monitoring, network configuration, and 24/7 uptime responsibility.`);
+  }
+  if (gId === 'mi300x') {
+    ns.push(`AMD ROCm 6.x is production-ready for PyTorch workloads, but some CUDA-only libraries (FlashAttention, bitsandbytes) require ROCm ports. Validate your stack before large-scale deployment.`);
+  }
+  ns.push(`Memory math: ${mb}B params × ${inp.precMult*8} bits = ${(mb * inp.precMult).toFixed(0)} GB weights. Add ${(mb*0.4).toFixed(0)} GB KV cache overhead at 8K context. Total minimum: ~${(mb*inp.precMult*1.4).toFixed(0)} GB.`);
+  ns.push(`Prices are indicative (Jan 2026 market). H100 SXM availability from NVIDIA partners; used market via CoreWeave resellers, eBay, or Vast.ai.`);
+  return ns;
+}
+
+// ─── HELPERS ───
+function precMult(inp) { return { bf16:2, fp8:1, int8:1, int4:0.5 }[inp.precision||'bf16'] || 2; }
+function nextPow2(n, arr) { return arr.find(x => x >= n) || arr[arr.length-1]; }
+
+// ═══════════════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════════════
+function render(rec, inp) {
+  // Header
+  document.getElementById('rTitle').textContent = rec.title;
+  document.getElementById('rSub').textContent   = rec.subtitle;
+  document.getElementById('rCost').textContent  = fmtUSD(rec.total);
+  document.getElementById('rCpt').textContent   =
+    rec.cpt < 0.001 ? `$${(rec.cpt*1e6).toFixed(2)}/M tokens` : `$${rec.cpt.toFixed(4)}/token`;
+
+  // Spec boxes
+  document.getElementById('specGrid').innerHTML = rec.specs.map(s => `
+    <div class="spec-box">
+      <div class="text-xs mb-1" style="color:rgba(255,255,255,0.35)">${s.l}</div>
+      <div class="font-bold mono text-sm text-white">${s.v}</div>
+    </div>`).join('');
+
+  document.getElementById('rParallel').innerHTML = rec.parallel;
+  document.getElementById('rSoftware').innerHTML = rec.software;
+
+  // TCO rows
+  document.getElementById('tcoRows').innerHTML = Object.values(rec.tco).map(t => `
+    <div class="flex justify-between items-start py-2 border-b" style="border-color:rgba(255,255,255,0.05)">
+      <span class="text-sm pr-4" style="color:rgba(255,255,255,0.55)">${t.label}</span>
+      <span class="font-bold mono text-white shrink-0">${fmtUSD(t.v)}</span>
+    </div>`).join('');
+  document.getElementById('tcoTotal').textContent = fmtUSD(rec.total);
+
+  // TCO donut
+  renderTCOChart(rec.tco);
+
+  // Token cost
+  document.getElementById('tokenGrid').innerHTML = `
+    <div class="spec-box">
+      <div class="text-xs mb-1" style="color:rgba(255,255,255,0.35)">Per Million Tokens</div>
+      <div class="text-xl font-black mono" style="color:#a78bfa">$${(rec.cpt*1e6).toFixed(2)}</div>
+    </div>
+    <div class="spec-box">
+      <div class="text-xs mb-1" style="color:rgba(255,255,255,0.35)">Per Query (${inp.avgTok} tok)</div>
+      <div class="text-xl font-black mono" style="color:#60a5fa">$${(rec.cpt*inp.avgTok).toFixed(5)}</div>
+    </div>
+    <div class="spec-box">
+      <div class="text-xs mb-1" style="color:rgba(255,255,255,0.35)">Annual Token Volume</div>
+      <div class="text-xl font-black mono" style="color:#34d399">${fmtN(rec.annTok)}</div>
+    </div>
+    <div class="spec-box">
+      <div class="text-xs mb-1" style="color:rgba(255,255,255,0.35)">Monthly API Cost Equiv.</div>
+      <div class="text-xl font-black mono" style="color:#fbbf24">${fmtUSD(rec.total/36)}</div>
+    </div>`;
+
+  // Power analysis
+  if (rec.power) {
+    const { annPowerKwh, annPowerCost, gpuTdpTotal } = rec.power;
+    const maxTdp = 128 * 700; // reference max
+    const pct = Math.min(100, Math.round(gpuTdpTotal / maxTdp * 100));
+    document.getElementById('powerGrid').innerHTML = `
+      <div class="flex justify-between text-sm">
+        <span style="color:rgba(255,255,255,0.45)">Total GPU TDP</span>
+        <span class="font-bold mono text-white">${fmtN(gpuTdpTotal)} W</span>
+      </div>
+      <div class="flex justify-between text-sm">
+        <span style="color:rgba(255,255,255,0.45)">Annual power draw</span>
+        <span class="font-bold mono text-white">${fmtN(annPowerKwh)} kWh/yr</span>
+      </div>
+      <div>
+        <div class="flex justify-between text-sm mb-1">
+          <span style="color:rgba(255,255,255,0.45)">Annual power cost</span>
+          <span class="font-bold mono text-white">${fmtUSD(annPowerCost)}/yr</span>
+        </div>
+        <div class="power-bar"><div class="power-fill" style="width:${pct}%"></div></div>
+      </div>
+      <div class="flex justify-between text-sm">
+        <span style="color:rgba(255,255,255,0.45)">3-year power cost</span>
+        <span class="font-bold mono" style="color:#f87171">${fmtUSD(annPowerCost*3)}</span>
+      </div>
+      <div class="flex justify-between text-sm">
+        <span style="color:rgba(255,255,255,0.45)">Power share of TCO</span>
+        <span class="font-bold mono text-white">${Math.round(annPowerCost*3/rec.total*100)}%</span>
+      </div>`;
+  } else {
+    document.getElementById('powerGrid').innerHTML = `<p class="text-sm" style="color:rgba(255,255,255,0.4)">Cloud-managed — no direct power costs.</p>`;
+  }
+
+  // Alternatives
+  const tagMap = { better:'tag-green', good:'tag-blue', consider:'tag-yellow', worse:'tag-red' };
+  const lblMap = { better:'CHEAPER', good:'VIABLE', consider:'CONSIDER', worse:'HIGHER COST' };
+  document.getElementById('altsGrid').innerHTML = rec.alts.map(a => `
+    <div class="alt-row">
+      <div class="flex-1">
+        <div class="flex items-center gap-2 mb-1 flex-wrap">
+          <span class="font-semibold text-white">${a.name}</span>
+          <span class="tag ${tagMap[a.tag]||'tag-yellow'}">${lblMap[a.tag]||'CONSIDER'}</span>
+        </div>
+        <div class="text-sm" style="color:rgba(255,255,255,0.5)">${a.desc}</div>
+      </div>
+      <div class="text-right shrink-0 pl-2">
+        <div class="font-bold mono" style="color:rgba(255,255,255,0.6)">${fmtUSD(a.c3)}</div>
+        <div class="text-xs" style="color:rgba(255,255,255,0.25)">3yr cost</div>
+      </div>
+    </div>`).join('');
+
+  // Bar chart
+  renderAltChart(rec);
+
+  // Notes
+  document.getElementById('techNotes').innerHTML = rec.notes.map(n =>
+    `<p class="flex items-start gap-2"><span style="color:#a78bfa" class="shrink-0 mt-0.5">›</span><span>${n}</span></p>`).join('');
+}
+
+function renderTCOChart(tco) {
+  if (tcoChart) tcoChart.destroy();
+  const ctx = document.getElementById('tcoChart').getContext('2d');
+  const labels = Object.values(tco).map(t => t.label.split('(')[0].trim().substring(0,28));
+  const data   = Object.values(tco).map(t => t.v);
+  tcoChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor:['#7c3aed','#2563eb','#0891b2','#059669','#d97706','#dc2626'], borderColor:'#07071a', borderWidth:3 }] },
+    options: { responsive:true, plugins: {
+      legend: { position:'bottom', labels:{ color:'#9ca3af', font:{size:11}, padding:10, boxWidth:12 } },
+      tooltip: { callbacks: { label: c => ` ${fmtUSD(c.parsed)}` } }
+    }}
+  });
+}
+
+function renderAltChart(rec) {
+  if (altChart) altChart.destroy();
+  const ctx = document.getElementById('altChart').getContext('2d');
+  const labels = ['This Recommendation', ...rec.alts.map(a => a.name.substring(0,30))];
+  const data   = [rec.total, ...rec.alts.map(a => a.c3)];
+  const colors = ['#7c3aed', ...rec.alts.map(a => a.tag==='better'?'#059669':a.tag==='good'?'#2563eb':'#d97706')];
+  altChart = new Chart(ctx, {
+    type:'bar',
+    data:{ labels, datasets:[{ data, backgroundColor:colors, borderRadius:6, borderSkipped:false }] },
+    options:{ responsive:true, plugins:{ legend:{display:false},
+      tooltip:{ callbacks:{ label:c => ` ${fmtUSD(c.parsed)} (3yr)` } } },
+      scales:{ x:{ ticks:{color:'#6b7280',font:{size:11}}, grid:{color:'rgba(255,255,255,0.04)'} },
+               y:{ ticks:{color:'#6b7280',font:{size:11},callback:v=>fmtUSD(v)}, grid:{color:'rgba(255,255,255,0.06)'} } }
+    }
+  });
+}
+</script>
+</body>
+</html>
