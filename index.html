@@ -402,13 +402,16 @@
 // ═══════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════
+// GPU specs & prices as of Jan 2026. bw = memory bandwidth in GB/s. bf16 = TFLOPS.
 const GPU = {
-  h100_sxm: { name:'NVIDIA H100 SXM5 80GB', vendor:'NVIDIA', vram:80, price:32000, tdp:700, bf16:989, bw:3350, nvlink:true,  gen:'Hopper 2023' },
-  h100_pcie:{ name:'NVIDIA H100 PCIe 80GB', vendor:'NVIDIA', vram:80, price:26000, tdp:350, bf16:756, bw:2000, nvlink:false, gen:'Hopper 2023' },
-  h200_sxm: { name:'NVIDIA H200 SXM5 141GB',vendor:'NVIDIA', vram:141,price:40000, tdp:700, bf16:989, bw:4800, nvlink:true,  gen:'Hopper+ 2024' },
-  a100_80:  { name:'NVIDIA A100 SXM 80GB (used)',vendor:'NVIDIA',vram:80,price:11000,tdp:400,bf16:312,bw:2000, nvlink:true,  gen:'Ampere 2020' },
-  mi300x:   { name:'AMD Instinct MI300X 192GB',vendor:'AMD',  vram:192,price:17000, tdp:750, bf16:1307,bw:5300, nvlink:false, gen:'CDNA3 2023' },
-  rtx4090:  { name:'NVIDIA RTX 4090 24GB',  vendor:'NVIDIA', vram:24, price:1800,  tdp:450, bf16:165, bw:1008, nvlink:false, gen:'Ada 2022' },
+  b200_sxm:  { name:'NVIDIA B200 SXM',           vendor:'NVIDIA', vram:192, price:50000, tdp:1000, bf16:4500, bw:8000, nvlink:true,  gen:'Blackwell 2025' },
+  h200_sxm:  { name:'NVIDIA H200 SXM5 141GB',    vendor:'NVIDIA', vram:141, price:35000, tdp:700,  bf16:989,  bw:4800, nvlink:true,  gen:'Hopper+ 2024'  },
+  h100_sxm:  { name:'NVIDIA H100 SXM5 80GB',     vendor:'NVIDIA', vram:80,  price:28000, tdp:700,  bf16:989,  bw:3350, nvlink:true,  gen:'Hopper 2023'   },
+  h100_pcie: { name:'NVIDIA H100 PCIe 80GB',     vendor:'NVIDIA', vram:80,  price:22000, tdp:350,  bf16:756,  bw:2000, nvlink:false, gen:'Hopper 2023'   },
+  a100_80:   { name:'NVIDIA A100 80GB (used)',    vendor:'NVIDIA', vram:80,  price:11000, tdp:400,  bf16:312,  bw:2000, nvlink:true,  gen:'Ampere 2020'   },
+  mi350x:    { name:'AMD MI350X 288GB',           vendor:'AMD',    vram:288, price:20000, tdp:800,  bf16:1457, bw:8000, nvlink:false, gen:'CDNA4 2025'    },
+  mi300x:    { name:'AMD MI300X 192GB',           vendor:'AMD',    vram:192, price:15000, tdp:750,  bf16:1307, bw:5300, nvlink:false, gen:'CDNA3 2023'    },
+  rtx4090:   { name:'NVIDIA RTX 4090 24GB',       vendor:'NVIDIA', vram:24,  price:1800,  tdp:450,  bf16:165,  bw:1008, nvlink:false, gen:'Ada 2022'      },
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -452,6 +455,32 @@ function fmtN(n) {
   if (n >= 1e6)  return (n/1e6).toFixed(1)  + 'M';
   if (n >= 1e3)  return (n/1e3).toFixed(0)  + 'K';
   return n.toFixed(0);
+}
+
+// ═══════════════════════════════════════════════════════════
+// INFERENCE MATH (from docs: prefill=compute-bound, decode=bandwidth-bound)
+// ═══════════════════════════════════════════════════════════
+
+// KV cache per user: 70B/80-layer ≈ 1.3 MB/token across all layers; scales with model size.
+// Derivation: 2 (K+V) × num_layers × num_heads × head_dim × 2 bytes ≈ 1.3 MB/token at 70B.
+function kvGBPerUser(mb, ctxTokens) {
+  return Math.max(0.01, (ctxTokens * mb * (1.3 / 70)) / 1000);
+}
+
+// Decode is memory-bandwidth-bound (matrix×vector per step → reads all weights every token).
+// Each step: read model weights ONCE for entire batch + KV cache for every user.
+// Returns total system tokens/sec.
+function calcDecodeTPS(totalBWgbs, weightsGB, kvPerUser, batchSize) {
+  const avgKv = kvPerUser * 0.5; // mid-decode average KV size
+  const bytesPerStep = weightsGB + batchSize * avgKv;
+  return (batchSize / (bytesPerStep / totalBWgbs)) * 0.65;
+}
+
+// Prefill is compute-bound (matrix×matrix → bottleneck is FLOPS → determines TTFT).
+// FLOPs ≈ 2 × seqLen × modelParams (forward-pass Chinchilla estimate).
+function calcTTFTms(totalBF16tflops, seqLen, mb) {
+  const flops = 2 * seqLen * mb * 1e9;
+  return (flops / (totalBF16tflops * 1e12 * 0.65)) * 1000;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -513,50 +542,58 @@ function recommend(inp) {
 }
 
 // ─── INFERENCE ───
-function recInference(inp, memGB, annualTok) {
-  const { mb, dailyReq, avgTok, latency, budget, infra, expertise, elec, pue, concur } = inp;
+function recInference(inp, _memGB, annualTok) {
+  const { mb, dailyReq, avgTok, latency, budget, infra, expertise, precMult, ctxWin } = inp;
 
-  // Cloud cost estimate
-  const cloudRate = mb <= 13 ? 0.27 : mb <= 70 ? 0.59 : 3.00; // $/M tokens (GroqCloud)
-  const annualCloudCost = (annualTok / 1e6) * cloudRate;
-  const cloud3yr = annualCloudCost * 3;
-
-  // Decide cloud vs on-prem
-  const cloudOk = infra !== 'onprem';
+  // Cloud cost estimate (GroqCloud / Together AI rates)
+  const cloudRate = mb <= 13 ? 0.27 : mb <= 70 ? 0.59 : 3.00; // $/M tokens
+  const cloud3yr  = (annualTok / 1e6) * cloudRate * 3;
+  const cloudOk   = infra !== 'onprem';
   const preferCloud = cloudOk && (cloud3yr < Math.min(budget * 0.7, 30000) || expertise === 'solo');
-
   if (preferCloud) return cloudRec(inp, annualTok, cloudRate, cloud3yr);
 
-  // Select GPU
-  let gId, gCount;
+  const weightsGB = mb * precMult;
+  const kvPerUser = kvGBPerUser(mb, ctxWin);
+  // Latency SLA sets the max batch size — this is the pareto curve lever (from docs).
+  // Smaller batch → lower latency; larger batch → higher throughput/lower cost-per-token.
+  const batchCap  = { realtime: 16, interactive: 64, batch: 256 }[latency] || 64;
 
+  // GPU selection:
+  // Realtime → prioritize memory bandwidth (decode is bandwidth-bound → TTFT & TPS both improve)
+  // Batch    → prioritize VRAM (more KV cache space → larger batches → better cost/token)
+  let gId;
   if (mb >= 175) {
-    gId = budget > 8000000 ? 'h200_sxm' : 'h100_sxm';
-    const vram = GPU[gId].vram;
-    gCount = nextPow2(Math.ceil(memGB / vram), [4,8,16,32,64,128]);
+    gId = budget > 10000000 ? 'b200_sxm' : budget > 5000000 ? 'h200_sxm' : 'h100_sxm';
   } else if (mb >= 70) {
-    if (latency === 'realtime') {
-      gId = 'h100_sxm';
-      gCount = nextPow2(Math.ceil(memGB / 80), [2,4,8,16]);
-    } else {
-      gId = budget > 1000000 ? 'h100_pcie' : 'a100_80';
-      gCount = nextPow2(Math.ceil(memGB / GPU[gId].vram), [1,2,4,8]);
-    }
+    gId = latency === 'realtime'
+      ? (budget > 500000  ? 'b200_sxm' : 'h200_sxm') // B200=8TB/s, H200=4.8TB/s → fastest decode
+      : (budget > 1000000 ? 'h200_sxm' : 'h100_sxm');
   } else if (mb >= 13) {
-    gId = budget < 60000 ? 'a100_80' : 'h100_pcie';
-    gCount = nextPow2(Math.ceil(memGB / GPU[gId].vram), [1,2,4]);
+    gId = latency === 'realtime'
+      ? (budget > 200000 ? 'h200_sxm' : 'h100_sxm')
+      : (budget < 60000  ? 'a100_80'  : 'h100_pcie');
   } else {
-    // Small models
-    if (budget < 5000 || expertise === 'solo') { gId = 'rtx4090'; gCount = 1; }
-    else if (budget < 30000) { gId = 'a100_80'; gCount = 1; }
-    else { gId = 'h100_pcie'; gCount = 1; }
+    if      (budget < 5000 || expertise === 'solo') gId = 'rtx4090';
+    else if (budget < 30000)                        gId = 'a100_80';
+    else                                            gId = 'h100_pcie';
   }
 
-  // Scale for throughput
-  const tokPerSecPerGpu = mb > 0 ? (GPU[gId].bw / (mb * inp.precMult * 1e3)) * 0.65 : 1000;
-  const tokPerSecNeeded = (dailyReq * avgTok) / (24 * 3600);
-  const gpuForTput = Math.max(1, Math.ceil(tokPerSecNeeded / tokPerSecPerGpu));
-  gCount = nextPow2(Math.max(gCount, gpuForTput), [1,2,4,8,16,32,64,128]);
+  const g = GPU[gId];
+  // Minimum GPUs to hold model weights (TP within a node via NVLink)
+  let gCount = nextPow2(Math.ceil(weightsGB / g.vram), [1,2,4,8,16,32,64,128]);
+
+  // What does this cluster actually achieve?
+  const availKVGB     = g.vram * gCount - weightsGB;
+  const batchFromVRAM = Math.max(1, Math.floor(availKVGB / kvPerUser));
+  const optBatch      = Math.min(batchFromVRAM, batchCap);
+  const sysTPS        = calcDecodeTPS(g.bw * gCount, weightsGB, kvPerUser, optBatch);
+
+  // Scale out if sustained throughput demand exceeds cluster capacity
+  const tokSecNeeded = (dailyReq * avgTok) / 86400;
+  if (sysTPS > 0 && tokSecNeeded > sysTPS) {
+    const setsNeeded = Math.ceil(tokSecNeeded / sysTPS);
+    gCount = nextPow2(gCount * setsNeeded, [1,2,4,8,16,32,64,128]);
+  }
 
   return onpremRec(inp, gId, gCount, annualTok, 'inference');
 }
@@ -652,12 +689,12 @@ function cloudRec(inp, annualTok, rate, cost3yr) {
 
 // ─── ON-PREM RECOMMENDATION ───
 function onpremRec(inp, gId, gCount, tokenVolume, mode) {
-  const { mb, latency, elec, pue, expertise, timeline, trainTok } = inp;
+  const { mb, latency, elec, pue, expertise, timeline, trainTok, precMult, ctxWin } = inp;
   const g = GPU[gId];
 
   const gpuPerNode = g.nvlink ? 8 : 4;
-  const nodes = Math.ceil(gCount / gpuPerNode);
-  const par = parallelism(gCount, mb, mode, g);
+  const nodes      = Math.ceil(gCount / gpuPerNode);
+  const par        = parallelism(gCount, mb, mode, g);
 
   // CapEx
   const capGpu   = gCount * g.price;
@@ -665,37 +702,59 @@ function onpremRec(inp, gId, gCount, tokenVolume, mode) {
   const capTotal = capGpu + capInfra;
 
   // Power
-  const annPowerKwh = (gCount * g.tdp * pue * 8760) / 1000;
+  const annPowerKwh  = (gCount * g.tdp * pue * 8760) / 1000;
   const annPowerCost = annPowerKwh * elec;
-  const power3yr = annPowerCost * 3;
+  const power3yr     = annPowerCost * 3;
 
   // Staffing
   const staff3yr = { solo:0, startup:120000*3, midmarket:400000*3, enterprise:800000*3 }[expertise] || 120000*3;
 
   // Maintenance
   const maint3yr = capTotal * 0.08 * 3;
+  const total    = capTotal + power3yr + staff3yr + maint3yr;
 
-  const total = capTotal + power3yr + staff3yr + maint3yr;
-
-  // Tokens
+  // Tokens / cost-per-token
   const annTok = tokenVolume * (mode === 'inference' ? 365 : 1);
   const cpt    = total / (annTok * 3);
 
-  // Throughput
-  const tokSecPerGpu = g.bw / (mb * 2 * 1e3) * 0.65;
-  const totalTokSec  = tokSecPerGpu * gCount * (gCount > 1 ? 0.85 : 1.0);
-
-  // Training time
-  let trainTimeStr = '';
-  if (mode === 'training') {
-    const flops = 6 * mb * 1e9 * trainTok * 1e9;
-    const gpuFlops = g.bf16 * 1e12 * 0.45 * gCount;
-    const days = flops / gpuFlops / 86400;
-    trainTimeStr = days < 1 ? `${(days*24).toFixed(0)}h` : days < 30 ? `${days.toFixed(0)} days` : `${(days/30).toFixed(1)} months`;
+  // ── INFERENCE: batch size + TTFT + TPS (the pareto curve metrics) ──
+  let specsArr;
+  if (mode === 'inference' || mode === 'rag') {
+    const weightsGB     = mb * precMult;
+    const kvPerUser     = kvGBPerUser(mb, ctxWin);
+    const batchCap      = { realtime:16, interactive:64, batch:256 }[latency] || 64;
+    const availKVGB     = g.vram * gCount - weightsGB;
+    const batchFromVRAM = Math.max(1, Math.floor(availKVGB / Math.max(kvPerUser, 0.01)));
+    const optBatch      = Math.min(batchFromVRAM, batchCap);
+    const sysTPS        = calcDecodeTPS(g.bw * gCount, weightsGB, kvPerUser, optBatch);
+    const ttft          = calcTTFTms(g.bf16 * gCount, ctxWin, mb);
+    specsArr = [
+      { l:'Weights + KV Cache',    v:`${weightsGB.toFixed(0)} GB + ${(kvPerUser*optBatch).toFixed(0)} GB` },
+      { l:'Optimal Batch Size',    v:`~${optBatch} concurrent users` },
+      { l:'TTFT (prefill, compute-bound)', v:`~${ttft < 1000 ? ttft.toFixed(0)+'ms' : (ttft/1000).toFixed(1)+'s'}` },
+      { l:'Decode Throughput (BW-bound)',  v:`~${fmtN(sysTPS)} tok/s` },
+    ];
+  } else {
+    // Training / fine-tuning
+    let trainTimeStr = '';
+    if (mode === 'training') {
+      const flops    = 6 * mb * 1e9 * trainTok * 1e9;
+      const gpuFlops = g.bf16 * 1e12 * 0.45 * gCount;
+      const days     = flops / gpuFlops / 86400;
+      trainTimeStr   = days < 1 ? `${(days*24).toFixed(0)}h` : days < 30 ? `${days.toFixed(0)} days` : `${(days/30).toFixed(1)} months`;
+    }
+    specsArr = [
+      { l:'GPU',          v:`${gCount}× ${g.name}` },
+      { l:'Total VRAM',   v:`${gCount * g.vram} GB` },
+      { l:'Nodes',        v:`${nodes}` },
+      mode === 'training'
+        ? { l:'Est. Training Time', v:trainTimeStr }
+        : { l:'Model Memory',       v:`${(mb * precMult).toFixed(0)} GB weights` },
+    ];
   }
 
   const tco = {
-    gpu:   { label:`GPU hardware — ${gCount}× ${g.name}`, v:capGpu },
+    gpu:   { label:`GPU hardware — ${gCount}× ${g.name}`,         v:capGpu   },
     infra: { label:`Infrastructure (servers, networking, cooling)`, v:capInfra },
     power: { label:`Power (${fmtN(annPowerKwh)} kWh/yr × $${elec}/kWh × 3yr)`, v:power3yr },
     ...(staff3yr > 0 ? { staff: { label:`MLOps / engineering staff (3yr)`, v:staff3yr } } : {}),
@@ -705,121 +764,135 @@ function onpremRec(inp, gId, gCount, tokenVolume, mode) {
   return {
     type:'onprem', title:`${gCount}× ${g.name}`,
     subtitle:`${nodes} compute node${nodes>1?'s':''} · ${par.name}`,
-    specs:[
-      { l:'GPU', v:`${gCount}× ${g.name}` },
-      { l:'Total VRAM', v:`${gCount * g.vram} GB` },
-      { l:'Nodes', v:`${nodes}` },
-      mode === 'inference'
-        ? { l:'Est. Throughput', v:`~${fmtN(totalTokSec)} tok/s` }
-        : { l:'Training Time', v:trainTimeStr },
-    ],
+    specs: specsArr,
     parallel: par.desc,
     software: softStack(mode, gCount, mb, g.vendor),
     tco, total, cpt, annTok,
     power: { annPowerKwh, annPowerCost, gpuTdpTotal: gCount * g.tdp },
-    alts: altOptions(inp, gId, gCount, total, tokenVolume, mode),
+    alts:  altOptions(inp, gId, gCount, total, tokenVolume, mode),
     notes: techNotes(inp, gId, gCount, mode),
   };
 }
 
 // ─── PARALLELISM STRATEGY ───
+// Core principle from docs: TP within a node (NVLink 900 GB/s handles high-frequency
+// all-reduces), PP across nodes (InfiniBand ~50 GB/s tolerates lower-frequency boundaries).
+// 3D = TP × PP × DP for frontier scale (e.g. Meta LLaMA 3 405B on 16K+ H100s).
 function parallelism(gpuCount, mb, mode, g) {
-  if (gpuCount === 1) return { name:'Single GPU', desc:`Single GPU — no parallelism. Model fits in ${g.vram}GB VRAM${mb<=7?' with room for large batches':''}.` };
+  if (gpuCount === 1) {
+    return { name:'Single GPU',
+      desc:`Single GPU — no parallelism overhead. Full ${g.vram}GB VRAM available for model weights + KV cache. Maximize batch size to improve throughput and cost-per-token.` };
+  }
 
+  // TP within a single node: NVLink (900 GB/s) sustains the frequent per-layer all-reduces.
+  // TP across nodes via InfiniBand (~50 GB/s) would be 18× slower — a hard bottleneck.
   if (gpuCount <= 8 && g.nvlink) {
-    const tp = Math.min(gpuCount, 8);
+    const tp = gpuCount;
     return { name:`Tensor Parallel TP=${tp}`,
-      desc:`Tensor Parallelism (TP=${tp}) via NVLink ${g.nvlink?'(900 GB/s)':''}. Each GPU holds 1/${tp} of every attention head and MLP layer. All-reduce at each transformer layer boundary. Achieves near-linear scaling within a single DGX/HGX node. Requires NVLink for efficiency — PCIe bottleneck would limit scaling.` };
+      desc:`Tensor Parallelism (TP=${tp}) within a single node via NVLink (900 GB/s). Each GPU holds 1/${tp} of every attention head and FFN weight matrix — all-reduce fires at every transformer layer boundary. NVLink bandwidth makes this efficient; PCIe or InfiniBand at ~50 GB/s cannot sustain this communication pattern. Combined memory bandwidth = ${tp}× single-GPU → near-linear decode TPS scaling. Expected GPU utilization 75–85%.` };
   }
 
   if (gpuCount <= 8 && !g.nvlink) {
     return { name:`Data Parallel (DDP)`,
-      desc:`Data Parallelism via PyTorch DDP. Each GPU holds a full model copy (${(mb*2).toFixed(0)} GB). Gradient sync over PCIe/InfiniBand. Effective for batch-size scaling. For memory-efficiency at this model size consider FSDP (Fully Sharded Data Parallel) which shards optimizer states.` };
+      desc:`Data Parallelism via PyTorch DDP. Each GPU holds a full model replica (${(mb * 2).toFixed(0)} GB). Batch split evenly; gradient all-reduce over PCIe after each step. Scales throughput (more batches/sec) without reducing per-GPU memory. For memory-efficiency with large models use FSDP to shard optimizer states, reducing per-GPU peak memory by ~4×.` };
   }
 
   if (gpuCount <= 16) {
-    return { name:`TP=8 + PP=2`,
-      desc:`Hybrid parallelism: Tensor Parallel (TP=8) within each 8-GPU node via NVLink, Pipeline Parallel (PP=2) across 2 nodes via 100GbE/InfiniBand. Model split into 2 pipeline micro-batch stages. Requires ${gpuCount/8} nodes with InfiniBand HDR (200Gb/s) inter-node fabric. Expected MFU ~48–52%.` };
+    const nodes = Math.ceil(gpuCount / 8);
+    return { name:`TP=8 + PP=${nodes}`,
+      desc:`Hybrid parallelism: Tensor Parallel (TP=8) within each 8-GPU node via NVLink (900 GB/s) — handles high-frequency intra-layer all-reduces. Pipeline Parallel (PP=${nodes}) across nodes via InfiniBand HDR — low-frequency stage boundaries tolerate ~50 GB/s bandwidth. Use micro-batching to fill the pipeline: with 4 micro-batches per stage, bubble overhead drops below 20%. Expected MFU: 48–52%.` };
   }
 
   if (gpuCount <= 64) {
     const nodes = Math.ceil(gpuCount / 8);
-    const dp = Math.max(1, Math.floor(nodes / 2));
+    const dp    = Math.max(1, Math.floor(nodes / 2));
     return { name:`3D Parallel (DP=${dp}, TP=8, PP=2)`,
-      desc:`3D Parallelism: Data Parallel (${dp} replica groups) × Tensor Parallel (TP=8, within each node) × Pipeline Parallel (PP=2, across node pairs). Standard Megatron-LM 3D setup for ${mb}B–175B models. Requires InfiniBand HDR (200 Gb/s) inter-node fabric. Expected MFU ~42–48%.` };
+      desc:`3D Parallelism: Tensor Parallel (TP=8) within each node × Pipeline Parallel (PP=2) across node pairs × Data Parallel (DP=${dp} replica groups). Standard Megatron-LM configuration for 70B–175B models. NVLink for TP, InfiniBand HDR (200 Gb/s) for PP and DP gradient sync. With 100 micro-batches across 4 pipeline stages, bubble overhead falls to ~3%. Expected MFU: 42–48%.` };
   }
 
   const nodes = Math.ceil(gpuCount / 8);
-  const dp = Math.max(1, Math.floor(nodes / 4));
+  const dp    = Math.max(1, Math.floor(nodes / 4));
   return { name:`Full 3D Parallel (DP=${dp}, TP=8, PP=4)`,
-    desc:`Full 3D Parallelism at ${gpuCount}-GPU scale: DP=${dp} × TP=8 × PP=4. Pipeline depth 4 across node pairs, tensor parallel within nodes, data parallel across replica groups. Megatron-Core with Transformer Engine (FP8) on H100. Requires InfiniBand NDR/HDR400 fabric. Expected MFU ~38–44%.` };
+    desc:`Full 3D Parallelism at ${gpuCount}-GPU / ${nodes}-node scale: DP=${dp} × TP=8 × PP=4. This is the configuration Meta used to train LLaMA 3 405B on 16,000+ H100s. Megatron-Core + Transformer Engine (FP8, ~1.8× vs BF16). InfiniBand NDR/HDR400 fabric required. Gradient checkpointing reduces activation memory. Expected MFU: 38–44%. Benchmark against MLPerf Training v4 targets.` };
 }
 
 // ─── SOFTWARE STACK ───
 function softStack(mode, gpuCount, mb, vendor) {
   if (vendor === 'AMD') {
-    const base = 'ROCm 6.x + PyTorch (ROCm build). CUDA-based libraries need ROCm ports — test compatibility first. ';
-    return base + (mode === 'inference'
-      ? 'vLLM (ROCm supported). Text Generation Inference (TGI) also ROCm-compatible.'
-      : 'Megatron-LM ROCm port. PyTorch FSDP works natively. Flash Attention 2 ROCm port available.');
+    const shared = ' ROCm 6.x is production-ready for PyTorch. Validate CUDA-only libs (bitsandbytes, FlashAttention) — use ROCm ports. vLLM and TGI both support ROCm.';
+    return (mode === 'inference'
+      ? 'vLLM (ROCm build) — PagedAttention + continuous batching. Text Generation Inference (TGI) ROCm-compatible.'
+      : 'PyTorch FSDP (works natively on ROCm). Megatron-LM ROCm port available. Flash Attention ROCm port.') + shared;
   }
   if (mode === 'training') {
-    if (gpuCount <= 4) return 'PyTorch + DDP / FSDP (single node). Flash Attention 2. Gradient checkpointing. W&B or MLflow for tracking. HuggingFace Accelerate for easy multi-GPU.';
-    if (gpuCount <= 64) return 'Megatron-LM + FSDP. NVIDIA NCCL 2.x for collective comms. Flash Attention 2. TensorRT-LLM for evaluation. Weights & Biases for experiment tracking. DCGM for GPU health monitoring.';
-    return 'Megatron-Core + Transformer Engine (FP8 training). NVIDIA NeMo framework. NCCL + UCX-CX7 for fabric. DCGM + Prometheus for observability. MLPerf Training as baseline. FP8 gives ~1.8× throughput vs BF16 on H100.';
+    if (gpuCount <= 4)  return 'PyTorch DDP / FSDP (single node). Flash Attention 2. Gradient checkpointing. HuggingFace Accelerate. W&B or MLflow for experiment tracking.';
+    if (gpuCount <= 64) return 'Megatron-LM + PyTorch FSDP. NCCL 2.x for collective comms. Flash Attention 2. Transformer Engine (FP8 on H100/H200/B200) for ~1.8× compute throughput. DCGM for GPU health. W&B for tracking.';
+    return 'Megatron-Core + Transformer Engine (FP8 training, 1.8× vs BF16). NVIDIA NeMo framework. NCCL + UCX-CX7 over InfiniBand. DCGM + Prometheus + Grafana for observability. MLPerf Training v4 as MFU baseline. FP4 on B200 adds another ~2× boost.';
   }
   if (mode === 'finetuning') {
-    if (mb <= 7)  return 'HuggingFace Transformers + PEFT (QLoRA, LoRA). bitsandbytes for 4-bit quantization. Flash Attention 2. DeepSpeed ZeRO-2. Axolotl for opinionated fine-tuning pipelines.';
-    return 'HuggingFace TRL + DeepSpeed ZeRO-3. QLoRA for memory efficiency. Flash Attention 2. FSDP for larger batches. Unsloth for 2× speedup on smaller GPUs.';
+    if (mb <= 7) return 'HuggingFace Transformers + PEFT (QLoRA / LoRA). bitsandbytes INT4. Flash Attention 2. DeepSpeed ZeRO-2. Axolotl for opinionated pipelines. Unsloth for 2× speed on consumer GPUs.';
+    return 'HuggingFace TRL + DeepSpeed ZeRO-3. QLoRA for memory efficiency (fits 70B on 2× H100 PCIe). Flash Attention 2. FSDP for larger effective batch sizes.';
   }
   // Inference
-  if (gpuCount === 1) return 'vLLM (recommended) — PagedAttention, continuous batching. TensorRT-LLM for max throughput. Ollama for simple local deployment. SGLang for complex multi-call pipelines.';
-  return `vLLM with multi-GPU tensor parallelism (--tensor-parallel-size ${Math.min(gpuCount, 8)}). TensorRT-LLM for production. NVIDIA Triton Inference Server for enterprise serving. OpenAI-compatible API endpoint. FP8 quantization on H100 for ~2× throughput boost.`;
+  if (gpuCount === 1) return 'vLLM — PagedAttention, continuous batching, OpenAI-compatible API. TensorRT-LLM for max single-GPU throughput. Ollama for lightweight local deployment. SGLang for multi-step agent pipelines.';
+  return `vLLM with tensor parallelism (--tensor-parallel-size ${Math.min(gpuCount, 8)}). TensorRT-LLM for production-grade serving. NVIDIA Triton Inference Server for enterprise. Continuous batching (vLLM default) is critical for throughput — don't serve requests one at a time. FP8 on H100/H200/B200: halves memory → doubles max batch size → better cost-per-token.`;
 }
 
 // ─── ALTERNATIVES ───
 function altOptions(inp, primaryId, primaryCount, primaryTco, tokenVol, mode) {
-  const { mb, infra, expertise, elec, pue, latency } = inp;
-  const alts = [];
+  const { mb, infra, elec, pue, latency, precMult } = inp;
+  const alts   = [];
   const cloudOk = infra !== 'onprem';
 
-  // Cloud
-  if (cloudOk) {
-    const rate = mb<=13 ? 0.27 : mb<=70 ? 0.59 : 3.00;
+  // 1. Cloud API
+  if (cloudOk && mode !== 'training') {
+    const rate   = mb<=13 ? 0.27 : mb<=70 ? 0.59 : 3.00;
     const annTok = tokenVol * (mode==='inference'?365:1);
-    const c3 = (annTok/1e6) * rate * 3;
-    alts.push({ name:'Cloud API (GroqCloud / Together AI)', tag: c3 < primaryTco ? 'better' : 'worse',
-      desc:`~$${rate}/M tokens. Zero CapEx, instant start. ${c3 < primaryTco ? `Saves ${fmtUSD(primaryTco - c3)} vs on-prem at this volume.` : `On-prem breaks even at ~${fmtN(primaryTco/(rate/1e6))} tokens.`}`, c3 });
+    const c3     = (annTok/1e6) * rate * 3;
+    alts.push({ name:'Cloud API (GroqCloud / Together AI / Fireworks)', tag: c3 < primaryTco ? 'better' : 'worse',
+      desc:`~$${rate}/M tokens. Zero CapEx, instant elasticity. ${c3 < primaryTco
+        ? `Saves ${fmtUSD(primaryTco-c3)} over 3 years vs on-prem.`
+        : `On-prem breaks even at ~${fmtN(primaryTco/(rate/1e6))} cumulative tokens.`}`, c3 });
   }
 
-  // AMD MI300X for large models
-  if (primaryId !== 'mi300x' && mb >= 34) {
-    const cnt = nextPow2(Math.ceil((mb*2*1.2)/192), [1,2,4,8,16]);
-    const c3 = cnt*17000 + cnt*3000 + (cnt*750*pue*8760/1000)*elec*3 + 100000*3;
-    alts.push({ name:`AMD MI300X × ${cnt} (192GB each)`, tag: c3 < primaryTco ? 'better' : 'consider',
-      desc:`192GB HBM3 per GPU — fits ${mb}B model on fewer GPUs. 5.3 TB/s bandwidth. ROCm ecosystem maturing. ${c3 < primaryTco ? `${fmtUSD(primaryTco-c3)} cheaper TCO.` : 'Comparable TCO, software risk.'}`, c3 });
+  // 2. B200 upgrade (if primary is H100/H200 and inference)
+  if (['h100_sxm','h100_pcie','h200_sxm'].includes(primaryId) && (mode==='inference'||mode==='rag')) {
+    const b200n   = nextPow2(Math.ceil((mb * precMult) / 192), [1,2,4,8]);
+    const c3      = b200n*50000 + Math.ceil(b200n/8)*18000 + (b200n*1000*pue*8760/1000)*elec*3 + primaryTco*0.08*3;
+    const bwGain  = ((GPU['b200_sxm'].bw * b200n) / (GPU[primaryId].bw * primaryCount)).toFixed(1);
+    alts.push({ name:`NVIDIA B200 SXM × ${b200n} (Blackwell upgrade)`, tag: c3 < primaryTco ? 'better' : 'consider',
+      desc:`192GB HBM3e, 8 TB/s — ~${bwGain}× decode bandwidth vs your primary option. FP4 inference available for another ~2× boost. Liquid cooling required. ${c3 < primaryTco ? `${fmtUSD(primaryTco-c3)} lower TCO from fewer GPUs needed.` : 'Higher per-GPU cost; fewer GPUs for same throughput.'}`, c3 });
   }
 
-  // A100 used market
-  if (primaryId === 'h100_sxm' || primaryId === 'h100_pcie') {
-    const c3 = primaryCount*11000 + Math.ceil(primaryCount/8)*18000 + (primaryCount*400*pue*8760/1000)*elec*3 + 90000*3;
-    alts.push({ name:`NVIDIA A100 80GB × ${primaryCount} (used market)`, tag: c3 < primaryTco ? 'better' : 'consider',
-      desc:`~$11K/unit used (Jan 2026). Same 80GB VRAM, ~3× less peak BF16 compute vs H100. No FP8. Ampere generation. ${c3 < primaryTco ? `${fmtUSD(primaryTco-c3)} cheaper.` : 'Higher TCO but proven hardware.'}`, c3 });
+  // 3. AMD MI350X for large models (288GB = most VRAM of any GPU)
+  if (!['mi300x','mi350x'].includes(primaryId) && mb >= 34) {
+    const cnt = nextPow2(Math.ceil((mb * precMult) / 288), [1,2,4,8,16]);
+    const c3  = cnt*20000 + Math.ceil(cnt/4)*18000 + (cnt*800*pue*8760/1000)*elec*3 + 100000*3;
+    alts.push({ name:`AMD MI350X × ${cnt} (288GB HBM3e each)`, tag: c3 < primaryTco ? 'better' : 'consider',
+      desc:`288GB VRAM — most of any GPU. Fits ${mb}B model on ${cnt} GPU${cnt>1?'s':''} with large KV caches for high-batch throughput. 8 TB/s bandwidth (matches B200). ROCm 6.x maturing — test your stack. ${c3 < primaryTco ? `${fmtUSD(primaryTco-c3)} lower TCO.` : 'Comparable economics, CUDA lock-in avoided.'}`, c3 });
   }
 
-  // Cerebras for large training
+  // 4. A100 used market (if primary is H100/H200)
+  if (['h100_sxm','h100_pcie','h200_sxm'].includes(primaryId) && !['mi350x','b200_sxm'].includes(primaryId)) {
+    const a100n = nextPow2(Math.ceil((mb * precMult) / 80), [1,2,4,8,16,32]);
+    const c3    = a100n*11000 + Math.ceil(a100n/8)*18000 + (a100n*400*pue*8760/1000)*elec*3 + 90000*3;
+    alts.push({ name:`NVIDIA A100 80GB × ${a100n} (used ~$11K/unit)`, tag: c3 < primaryTco ? 'better' : 'consider',
+      desc:`Used market pricing (Jan 2026). Same 80GB VRAM, 2 TB/s bandwidth. No FP8. ~3× less BF16 compute vs H100 but proven hardware for inference. ${c3 < primaryTco ? `${fmtUSD(primaryTco-c3)} cheaper.` : 'Lower upfront risk.'}`, c3 });
+  }
+
+  // 5. Cerebras WSE-3 for large training
   if (mode === 'training' && mb >= 70) {
-    alts.push({ name:'Cerebras CS-3 (wafer-scale chip)', tag:'consider',
-      desc:`~$2M+ system, 900K cores, 44GB on-chip SRAM. Eliminates inter-chip comms. Best for 70B–1T models. Proprietary software stack, 6–12 month procurement. Long-term lower $/token for very large scale.`, c3:2200000 + 150000*3 });
+    alts.push({ name:'Cerebras CS-3 (wafer-scale engine)', tag:'consider',
+      desc:`WSE-3: 900K cores, 44GB on-chip SRAM — eliminates inter-chip memory wall, no pipeline parallelism needed. Claims 20× faster than GPUs. OpenAI ran models on Cerebras (Feb 2026); AWS Bedrock partnership. IPO Q2 2026. 6–12 month procurement lead time.`, c3:2200000 + 150000*3 });
   }
 
-  // Groq for real-time inference
-  if (mode === 'inference' && latency === 'realtime' && mb <= 70 && cloudOk) {
-    const rate = mb<=13 ? 0.10 : 0.59;
-    const annTok = tokenVol;
-    const c3 = (annTok/1e6)*rate*3 + 8000;
-    alts.push({ name:'Groq LPU — ultra-low latency inference', tag: c3 < primaryTco ? 'better' : 'good',
-      desc:`Groq Language Processing Unit. Sub-50ms TTFT for 70B models. Deterministic latency. No infrastructure to manage. GroqCloud API at $${rate}/M tokens.`, c3 });
+  // 6. Groq LPU for real-time inference (NVIDIA acquired Dec 2025 for ~$20B)
+  if ((mode==='inference'||mode==='rag') && latency==='realtime' && mb<=70 && cloudOk) {
+    const rate   = mb<=13 ? 0.10 : 0.59;
+    const annTok = tokenVol * 365;
+    const c3     = (annTok/1e6)*rate*3 + 8000;
+    alts.push({ name:'Groq LPU (acq. by NVIDIA, Dec 2025 ~$20B)', tag: c3 < primaryTco ? 'better' : 'good',
+      desc:`On-chip SRAM + deterministic scheduling → 1,600+ tok/s, sub-50ms TTFT for 70B. Purpose-built for realtime inference. NVIDIA absorbed Groq to bring this architecture in-house; next-gen NVIDIA chip expected at GTC 2026. GroqCloud API at $${rate}/M tokens.`, c3 });
   }
 
   return alts.slice(0, 3);
@@ -827,36 +900,76 @@ function altOptions(inp, primaryId, primaryCount, primaryTco, tokenVol, mode) {
 
 // ─── TECHNICAL NOTES ───
 function techNotes(inp, gId, gCount, mode) {
-  const { mb, latency, expertise } = inp;
-  const g = GPU[gId];
-  const ns = [];
+  const { mb, latency, expertise, precMult, ctxWin } = inp;
+  const g   = GPU[gId];
+  const ns  = [];
 
-  if (g.vendor === 'NVIDIA' && gId.includes('h100')) {
-    ns.push(`H100 supports FP8 training via Transformer Engine — ~1.8× throughput vs BF16 for training. Enable with <code>transformer_engine</code> library.`);
+  if (mode === 'inference' || mode === 'rag') {
+    const weightsGB     = mb * precMult;
+    const kvPerUser     = kvGBPerUser(mb, ctxWin);
+    const batchCap      = { realtime:16, interactive:64, batch:256 }[latency] || 64;
+    const availKVGB     = g.vram * gCount - weightsGB;
+    const maxBatch      = Math.max(1, Math.floor(availKVGB / Math.max(kvPerUser, 0.01)));
+    const optBatch      = Math.min(maxBatch, batchCap);
+
+    // Core architecture insight
+    ns.push(`<strong>Prefill is compute-bound → drives TTFT.</strong> Processing your ${ctxWin.toLocaleString()}-token prompt runs as matrix×matrix multiplication — GPU FLOPS are the bottleneck. More FLOPS (B200 at 4500 TFLOPS vs H100 at 989 TFLOPS) or more TP-degree directly reduces TTFT. <strong>Decode is memory-bandwidth-bound → drives TPS.</strong> Each output token reads all ${weightsGB.toFixed(0)} GB of model weights from HBM — bandwidth is the bottleneck. ${g.name} provides ${g.bw} GB/s; total cluster bandwidth = ${(g.bw*gCount).toLocaleString()} GB/s.`);
+
+    // Batch size / pareto curve
+    ns.push(`<strong>Batch size is your pareto lever.</strong> Your ${latency} SLA caps batch at ≤${batchCap}. With ${(g.vram*gCount).toFixed(0)} GB VRAM − ${weightsGB.toFixed(0)} GB weights = ${availKVGB.toFixed(0)} GB for KV cache → supports up to ${maxBatch} concurrent users at ${ctxWin.toLocaleString()}-token context. Optimal operating point: ~${optBatch} requests. Smaller batch → lower latency, lower throughput. Larger batch → higher throughput, lower cost/token.`);
+
+    // Latency strategies
+    ns.push(`<strong>To reduce TTFT (latency):</strong> (1) <em>Chunked prefill</em> — split long prompts into 512-token chunks to bound latency variance. (2) <em>Prefill/decode disaggregation</em> — dedicate separate GPUs to each phase. (3) <em>Add TP-degree</em> — more GPUs × combined bandwidth = faster decode per token. (4) <em>FP8 quantization</em> — halves weight size → fewer bytes to read per token → lower latency and higher TPS simultaneously.`);
+
+    // Throughput strategies
+    ns.push(`<strong>To increase throughput (lower cost/token):</strong> (1) <em>Continuous batching</em> (vLLM default) — add new requests as slots free, don't wait for all requests to complete. (2) <em>Maximize batch size</em> — push toward ${maxBatch} concurrent users to amortize weight reads across more tokens. (3) <em>PagedAttention</em> — virtual memory for KV cache; eliminates ~30% memory fragmentation waste. (4) <em>FP8/INT4 quantization</em> — halves memory → room to double batch at same latency SLA.`);
+
+    // Speculative decoding for lower request rates
+    if (mb >= 13 && latency !== 'batch') {
+      ns.push(`<strong>Speculative decoding</strong> (+40–60% decode throughput at low batch sizes): Run a small draft model (3–7B) to predict 3–5 tokens ahead; verify in parallel with the full model in one forward pass. Effective when requests/sec is low and GPU is underutilized. vLLM and TensorRT-LLM support this natively.`);
+    }
+
+    // KV cache memory breakdown
+    ns.push(`<strong>KV cache math:</strong> ${mb}B params × ${ctxWin.toLocaleString()} ctx = ~${kvPerUser.toFixed(1)} GB/user (scales with context length and model size). At batch=${optBatch}: ${(kvPerUser*optBatch).toFixed(1)} GB KV + ${weightsGB.toFixed(0)} GB weights = ${(kvPerUser*optBatch+weightsGB).toFixed(0)} GB total. <em>Reduce KV cache:</em> GQA (used in Llama 3) shrinks K/V heads by 4–8×. KV cache quantization to INT8 halves it further. Both are lossless in practice.`);
   }
-  if (gCount > 8) {
-    ns.push(`Multi-node setup requires InfiniBand HDR (200Gb/s) or RoCE v2. Budget $15–30K/node for networking. NCCL performance is sensitive to fabric topology — use <code>NCCL_DEBUG=INFO</code> to diagnose.`);
+
+  if (mode === 'training') {
+    ns.push(`<strong>Training memory:</strong> ${mb}B params × 16 bytes = ${(mb*16).toFixed(0)} GB (weights + gradients + Adam optimizer states). Transformer Engine FP8 on H100/H200/B200 delivers ~1.8× throughput vs BF16 with mixed-precision stability. B200 FP4 adds another ~2×.`);
+    if (gCount > 8) {
+      ns.push(`<strong>Multi-node networking:</strong> TP within a node uses NVLink (900 GB/s). PP across nodes uses InfiniBand — HDR at 200 Gb/s (18× slower than NVLink). This is why TP must stay within a single node. Budget $15–30K/node for IB networking. Use <code>NCCL_DEBUG=INFO</code> to diagnose collective communication bottlenecks.`);
+    }
+    const ppStages = gCount > 64 ? 4 : gCount > 16 ? 2 : Math.ceil(gCount/8);
+    if (ppStages > 1) {
+      ns.push(`<strong>Pipeline bubble:</strong> With ${ppStages} pipeline stages, use ≥${ppStages*4} micro-batches. Bubble overhead = (stages−1)/(micro-batches+stages−1) ≈ ${Math.round((ppStages-1)/(ppStages*4+ppStages-1)*100)}% idle. Megatron-LM handles micro-batching automatically. Aim for MFU >40% — benchmark against MLPerf Training v4 targets.`);
+    }
   }
-  if (mode === 'inference' && latency === 'realtime') {
-    ns.push(`Real-time latency (&lt;100ms TTFT) requires tensor parallelism, PagedAttention, and prefill/decode disaggregation. Consider speculative decoding (+40–60% decode throughput) with a small draft model.`);
+
+  if (mode === 'finetuning') {
+    ns.push(`<strong>Fine-tuning memory:</strong> LoRA (r=16) adds ~${(mb*0.01).toFixed(1)} GB of trainable adapters on top of frozen weights (~${(mb*precMult).toFixed(0)} GB). QLoRA quantizes base weights to INT4 (~${(mb*0.5).toFixed(0)} GB) — makes 70B fine-tuning feasible on 2× H100 PCIe. Expect LoRA to recover 95–99% of full fine-tune quality.`);
   }
-  const infMemGB = mb * 2 * 1.2;
-  if (infMemGB > g.vram * gCount) {
-    ns.push(`⚠️ Model requires quantization to fit in ${gCount*g.vram}GB VRAM. Use GPTQ INT4 or AWQ — expect ~3–8% accuracy degradation vs BF16.`);
+
+  // GPU-specific
+  if (gId === 'b200_sxm') {
+    ns.push(`<strong>B200 specifics:</strong> 1000W TDP requires direct liquid cooling (DLC) — validate your data center before ordering. FP4 inference available for ~2× additional speedup over FP8. 5× H100 inference performance at the system level (GB200 NVL72 benchmark). Production availability ramping through 2025–2026.`);
+  }
+  if (g.vendor === 'AMD') {
+    ns.push(`<strong>AMD ROCm:</strong> ROCm 6.x is production-ready for PyTorch workloads. Key gaps to test: bitsandbytes (INT4/INT8), some FlashAttention kernel variants. vLLM and TGI both have ROCm support. Cloud providers (Oracle, AWS Bedrock) are adopting AMD — growing software maturity.`);
+  }
+  if (['h100_sxm','h100_pcie','h200_sxm'].includes(gId)) {
+    ns.push(`FP8 via NVIDIA Transformer Engine: ~1.8× training throughput vs BF16; ~2× memory savings for inference (halves weight size → room to double batch size). Enable with <code>--dtype fp8</code> in vLLM or <code>transformer_engine</code> in training. Requires H100 or newer.`);
   }
   if (expertise === 'solo') {
-    ns.push(`As a solo developer, strongly consider cloud APIs to avoid infra overhead. On-prem requires driver management, hardware monitoring, network configuration, and 24/7 uptime responsibility.`);
+    ns.push(`As a solo developer, strongly consider cloud APIs to reduce operational burden. On-prem requires ongoing: driver updates, hardware monitoring (DCGM), thermal management, network configuration, and 24/7 uptime responsibility. Cloud API + caching layer often beats on-prem TCO at your scale.`);
   }
-  if (gId === 'mi300x') {
-    ns.push(`AMD ROCm 6.x is production-ready for PyTorch workloads, but some CUDA-only libraries (FlashAttention, bitsandbytes) require ROCm ports. Validate your stack before large-scale deployment.`);
+  if (gCount > g.vram && mb * precMult > g.vram * gCount) {
+    ns.push(`⚠️ Model weights (${(mb*precMult).toFixed(0)} GB) exceed available VRAM (${g.vram*gCount} GB). Quantize to INT4 (AWQ / GPTQ) to fit — expect 2–5% accuracy degradation vs BF16. Or add more GPUs.`);
   }
-  ns.push(`Memory math: ${mb}B params × ${inp.precMult*8} bits = ${(mb * inp.precMult).toFixed(0)} GB weights. Add ${(mb*0.4).toFixed(0)} GB KV cache overhead at 8K context. Total minimum: ~${(mb*inp.precMult*1.4).toFixed(0)} GB.`);
-  ns.push(`Prices are indicative (Jan 2026 market). H100 SXM availability from NVIDIA partners; used market via CoreWeave resellers, eBay, or Vast.ai.`);
+
+  ns.push(`Prices are indicative (Jan 2026 market). H100/H200 from NVIDIA partners. B200 availability ramping. Used A100s via CoreWeave resellers, eBay, Vast.ai. Benchmark your specific workload — these are estimates.`);
   return ns;
 }
 
 // ─── HELPERS ───
-function precMult(inp) { return { bf16:2, fp8:1, int8:1, int4:0.5 }[inp.precision||'bf16'] || 2; }
 function nextPow2(n, arr) { return arr.find(x => x >= n) || arr[arr.length-1]; }
 
 // ═══════════════════════════════════════════════════════════
