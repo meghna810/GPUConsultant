@@ -543,14 +543,7 @@ function recommend(inp) {
 
 // ─── INFERENCE ───
 function recInference(inp, _memGB, annualTok) {
-  const { mb, dailyReq, avgTok, latency, budget, infra, expertise, precMult, ctxWin } = inp;
-
-  // Cloud cost estimate (GroqCloud / Together AI rates)
-  const cloudRate = mb <= 13 ? 0.27 : mb <= 70 ? 0.59 : 3.00; // $/M tokens
-  const cloud3yr  = (annualTok / 1e6) * cloudRate * 3;
-  const cloudOk   = infra !== 'onprem';
-  const preferCloud = cloudOk && (cloud3yr < Math.min(budget * 0.7, 30000) || expertise === 'solo');
-  if (preferCloud) return cloudRec(inp, annualTok, cloudRate, cloud3yr);
+  const { mb, dailyReq, avgTok, latency, budget, expertise, precMult, ctxWin } = inp;
 
   const weightsGB = mb * precMult;
   const kvPerUser = kvGBPerUser(mb, ctxWin);
@@ -644,47 +637,6 @@ function recFinetune(inp, memGB) {
   }
 
   return onpremRec(inp, gId, gCount, 1e9, 'finetuning');
-}
-
-// ─── CLOUD RECOMMENDATION ───
-function cloudRec(inp, annualTok, rate, cost3yr) {
-  const { mb, dailyReq, avgTok, latency, expertise } = inp;
-  const provider = latency === 'realtime' || mb <= 13 ? 'GroqCloud' : 'Together AI / Fireworks AI';
-  const ttft = latency === 'realtime' ? '30–80ms' : '100–400ms';
-
-  const tco = {
-    api:   { label: 'API / token costs (3yr)', v: cost3yr },
-    eng:   { label: 'Integration engineering', v: 8000 },
-    tools: { label: 'Monitoring & observability (3yr)', v: 6000 * 3 },
-  };
-  const total = Object.values(tco).reduce((a,x) => a+x.v, 0);
-  const cpt   = total / (annualTok * 3);
-
-  return {
-    type:'cloud', title:`${provider} — Managed Cloud API`,
-    subtitle:`Optimal for ${fmtN(dailyReq)}/day requests · zero CapEx`,
-    specs:[
-      { l:'Provider', v:provider },
-      { l:'Est. TTFT', v:ttft },
-      { l:'Annual Tokens', v:fmtN(annualTok) },
-      { l:'Model Size', v:`${inp.mb}B params` },
-    ],
-    parallel: 'Managed by provider — no infrastructure to configure. Automatic load balancing, horizontal scaling, and geo-routing included.',
-    software: `REST/streaming API (OpenAI-compatible). Client libraries: openai SDK, LangChain, LlamaIndex. Add retry logic with exponential backoff. Use streaming for better perceived latency. Monitor with LangSmith or Helicone.`,
-    tco, total, cpt, annTok: annualTok,
-    power:null,
-    alts:[
-      { name:'Together AI',     tag:'good',    desc:`~$${mb<=13?'0.20':'0.90'}/M tokens. 70+ models, good throughput guarantees.`,       c3: (annualTok/1e6)*(mb<=13?0.20:0.90)*3 },
-      { name:'Fireworks AI',    tag:'good',    desc:`~$${mb<=13?'0.20':'0.50'}/M tokens. Production-grade, fast cold starts.`,            c3: (annualTok/1e6)*(mb<=13?0.20:0.50)*3 },
-      { name:'Single H100 PCIe (on-prem)', tag:'consider', desc:`$26K CapEx + ~$3K/yr power. Better for privacy. Break-even at ~${fmtN(29000/(rate/1e6))} total tokens.`, c3:26000+3000*3 },
-    ],
-    notes:[
-      `Break-even vs on-prem H100 PCIe: ~${fmtN(29000 / (rate/1e6))} lifetime tokens.`,
-      'Set hard rate limits and budget alerts — token costs scale directly with traffic.',
-      'Groq LPU is inference-only; if you add fine-tuning later you will need a separate training environment.',
-      `At ${fmtN(dailyReq)} req/day your cloud API bill is ${fmtUSD(cost3yr/36)}/month — well below on-prem operating cost.`,
-    ],
-  };
 }
 
 // ─── ON-PREM RECOMMENDATION ───
@@ -840,22 +792,10 @@ function softStack(mode, gpuCount, mb, vendor) {
 
 // ─── ALTERNATIVES ───
 function altOptions(inp, primaryId, primaryCount, primaryTco, tokenVol, mode) {
-  const { mb, infra, elec, pue, latency, precMult } = inp;
-  const alts   = [];
-  const cloudOk = infra !== 'onprem';
+  const { mb, elec, pue, latency, precMult } = inp;
+  const alts = [];
 
-  // 1. Cloud API
-  if (cloudOk && mode !== 'training') {
-    const rate   = mb<=13 ? 0.27 : mb<=70 ? 0.59 : 3.00;
-    const annTok = tokenVol * (mode==='inference'?365:1);
-    const c3     = (annTok/1e6) * rate * 3;
-    alts.push({ name:'Cloud API (GroqCloud / Together AI / Fireworks)', tag: c3 < primaryTco ? 'better' : 'worse',
-      desc:`~$${rate}/M tokens. Zero CapEx, instant elasticity. ${c3 < primaryTco
-        ? `Saves ${fmtUSD(primaryTco-c3)} over 3 years vs on-prem.`
-        : `On-prem breaks even at ~${fmtN(primaryTco/(rate/1e6))} cumulative tokens.`}`, c3 });
-  }
-
-  // 2. B200 upgrade (if primary is H100/H200 and inference)
+  // 1. B200 upgrade (if primary is H100/H200 and inference)
   if (['h100_sxm','h100_pcie','h200_sxm'].includes(primaryId) && (mode==='inference'||mode==='rag')) {
     const b200n   = nextPow2(Math.ceil((mb * precMult) / 192), [1,2,4,8]);
     const c3      = b200n*50000 + Math.ceil(b200n/8)*18000 + (b200n*1000*pue*8760/1000)*elec*3 + primaryTco*0.08*3;
@@ -884,15 +824,6 @@ function altOptions(inp, primaryId, primaryCount, primaryTco, tokenVol, mode) {
   if (mode === 'training' && mb >= 70) {
     alts.push({ name:'Cerebras CS-3 (wafer-scale engine)', tag:'consider',
       desc:`WSE-3: 900K cores, 44GB on-chip SRAM — eliminates inter-chip memory wall, no pipeline parallelism needed. Claims 20× faster than GPUs. OpenAI ran models on Cerebras (Feb 2026); AWS Bedrock partnership. IPO Q2 2026. 6–12 month procurement lead time.`, c3:2200000 + 150000*3 });
-  }
-
-  // 6. Groq LPU for real-time inference (NVIDIA acquired Dec 2025 for ~$20B)
-  if ((mode==='inference'||mode==='rag') && latency==='realtime' && mb<=70 && cloudOk) {
-    const rate   = mb<=13 ? 0.10 : 0.59;
-    const annTok = tokenVol * 365;
-    const c3     = (annTok/1e6)*rate*3 + 8000;
-    alts.push({ name:'Groq LPU (acq. by NVIDIA, Dec 2025 ~$20B)', tag: c3 < primaryTco ? 'better' : 'good',
-      desc:`On-chip SRAM + deterministic scheduling → 1,600+ tok/s, sub-50ms TTFT for 70B. Purpose-built for realtime inference. NVIDIA absorbed Groq to bring this architecture in-house; next-gen NVIDIA chip expected at GTC 2026. GroqCloud API at $${rate}/M tokens.`, c3 });
   }
 
   return alts.slice(0, 3);
@@ -959,7 +890,7 @@ function techNotes(inp, gId, gCount, mode) {
     ns.push(`FP8 via NVIDIA Transformer Engine: ~1.8× training throughput vs BF16; ~2× memory savings for inference (halves weight size → room to double batch size). Enable with <code>--dtype fp8</code> in vLLM or <code>transformer_engine</code> in training. Requires H100 or newer.`);
   }
   if (expertise === 'solo') {
-    ns.push(`As a solo developer, strongly consider cloud APIs to reduce operational burden. On-prem requires ongoing: driver updates, hardware monitoring (DCGM), thermal management, network configuration, and 24/7 uptime responsibility. Cloud API + caching layer often beats on-prem TCO at your scale.`);
+    ns.push(`Solo/small team deployment: prioritize managed GPU cloud providers (CoreWeave, Lambda Labs, Vast.ai) over bare-metal ownership. Reduces operational burden — no driver management, hardware monitoring, or 24/7 uptime responsibility. Rent before you buy.`);
   }
   if (gCount > g.vram && mb * precMult > g.vram * gCount) {
     ns.push(`⚠️ Model weights (${(mb*precMult).toFixed(0)} GB) exceed available VRAM (${g.vram*gCount} GB). Quantize to INT4 (AWQ / GPTQ) to fit — expect 2–5% accuracy degradation vs BF16. Or add more GPUs.`);
